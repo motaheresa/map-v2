@@ -526,7 +526,7 @@ export default function TeraaMap() {
     fetch('/result_more_simplified.geojson')
       .then(res => {
         if (!res.ok) {
-          throw new Error(`HTTP error! status: ${res.status}`);
+          throw new Error(`HTTP error! status: ${res.status}`)
         }
         return res.json();
       })
