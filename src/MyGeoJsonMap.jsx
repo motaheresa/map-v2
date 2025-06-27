@@ -188,7 +188,7 @@ const MapComponent = () => {
 
   // 2. Fetch GeoJSON Data from '/d_wgs84.json'
   useEffect(() => {
-    fetch('/d_wgs84.json.gz') 
+    fetch('/d_wgs84.json') 
       .then(response => {
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
