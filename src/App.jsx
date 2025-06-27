@@ -5,8 +5,7 @@ import TeraaMap from './TeraaMap'; // ده اسم الملف اللي فيه ا�
 
   function App() {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
-      <h1>Egypt Waterways Map</h1>
+      <div style={{ height: '100vh' }}>
       <MyGeoJsonMap />
     </div>
     );
