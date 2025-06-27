@@ -1,12 +1,14 @@
-  import TeraaMap from './TeraaMap'; // ده اسم الملف اللي فيه الكود اللي عملناه
+  import MyGeoJsonMap from './MyGeoJsonMap';
+import TeraaMap from './TeraaMap'; // ده اسم الملف اللي فيه الكود اللي عملناه
 
   // import TeraaMap fro./TeraaMapder";
 
   function App() {
     return (
-      <div className="App">
-        <TeraaMap />
-      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+      <h1>Egypt Waterways Map</h1>
+      <MyGeoJsonMap />
+    </div>
     );
   }
 
