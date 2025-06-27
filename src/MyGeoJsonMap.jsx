@@ -152,7 +152,7 @@ const MapComponent = () => {
 
   // 1. Load Google Maps API and Turf.js scripts
   useEffect(() => {
-    const googleMapsApiKey = 'AIzaSyC5MHgv-Vax9PJqB2kROWaiVYD5AtFHnIc'; 
+    const googleMapsApiKey = import.meta.env.VITE_Maps_API_KEY; 
 
     window.initMap = () => { 
       console.log("Google Maps initMap callback fired.");
