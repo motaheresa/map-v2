@@ -1,6 +1,4 @@
-
-
-import { useRef, useState } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import { GoogleMap, useJsApiLoader } from '@react-google-maps/api';
 
 const containerStyle = {
@@ -20,13 +18,27 @@ function MyMap() {
   });
 
   const infoWindowRef = useRef(null);
-
+  const mapRef = useRef(null);
   const [currentCoords, setCurrentCoords] = useState({ lat: 0, lng: 0 });
   const [lineName, setLineName] = useState(null);
+  const [features, setFeatures] = useState([]);
 
   const handleMapLoad = (map) => {
+    mapRef.current = map;
     const google = window.google;
     infoWindowRef.current = new google.maps.InfoWindow();
+
+    // إعدادات التحكم باللمس
+    map.setOptions({
+      gestureHandling: 'greedy',
+      gestureHandlingOptions: {
+        scrollable: true,
+        zoomOnDblClick: false
+      },
+      disableDoubleClickZoom: true,
+      keyboardShortcuts: false,
+      pinchZoom: false
+    });
 
     fetch('/data.json')
       .then((res) => res.json())
@@ -39,60 +51,75 @@ function MyMap() {
           strokeOpacity: 1,
         });
 
-        const features = [];
-        map.data.forEach((feature) => features.push(feature));
-
-        setInterval(() => {
-          const center = map.getCenter();
-          if (!center) return;
-
-          const currentPoint = new google.maps.LatLng(center.lat(), center.lng());
-
-          // ✅ تحديث الإحداثيات
-          setCurrentCoords({ lat: center.lat(), lng: center.lng() });
-
-          let found = false;
-
-          for (const feature of features) {
-            const geometry = feature.getGeometry();
-            if (geometry.getType() === 'LineString') {
-              const line = geometry;
-              const path = line.getArray();
-
-              for (let i = 0; i < path.length - 1; i++) {
-                const dist = google.maps.geometry.spherical.computeDistanceBetween(
-                  currentPoint,
-                  closestPointOnSegment(currentPoint, path[i], path[i + 1], google)
-                );
-
-                if (dist < 20) {
-                  const name = feature.getProperty('Name');
-                  setLineName(name); // ✅ عرض الاسم
-                  found = true;
-                  return;
-                }
-              }
-            }
-          }
-
-          if (!found) {
-            setLineName(null); // ✅ لو مفيش خط، نخفي الاسم
-          }
-        }, 1000);
+        const loadedFeatures = [];
+        map.data.forEach((feature) => loadedFeatures.push(feature));
+        setFeatures(loadedFeatures);
       });
   };
 
+  useEffect(() => {
+    if (!mapRef.current || features.length === 0) return;
+
+    const google = window.google;
+    const intervalId = setInterval(() => {
+      const center = mapRef.current.getCenter();
+      if (!center) return;
+
+      const currentPoint = new google.maps.LatLng(center.lat(), center.lng());
+      setCurrentCoords({ lat: center.lat(), lng: center.lng() });
+
+      let found = false;
+      for (const feature of features) {
+        const geometry = feature.getGeometry();
+        if (geometry.getType() === 'LineString') {
+          const line = geometry;
+          const path = line.getArray();
+
+          for (let i = 0; i < path.length - 1; i++) {
+            const dist = google.maps.geometry.spherical.computeDistanceBetween(
+              currentPoint,
+              closestPointOnSegment(currentPoint, path[i], path[i + 1], google)
+            );
+
+            if (dist < 20) {
+              const name = feature.getProperty('Name');
+              setLineName(name);
+              found = true;
+              break;
+            }
+          }
+          if (found) break;
+        }
+      }
+
+      if (!found) {
+        setLineName(null);
+      }
+    }, 1000);
+
+    return () => clearInterval(intervalId);
+  }, [features]);
+
   return isLoaded ? (
-    <div style={{ position: 'relative' }}>
+    <div style={{ position: 'relative', touchAction: 'pan-x pan-y' }}>
       <GoogleMap
         mapContainerStyle={containerStyle}
         center={center}
         zoom={15}
         onLoad={handleMapLoad}
+        options={{
+          gestureHandling: 'greedy',
+          gestureHandlingOptions: {
+            scrollable: true,
+            zoomOnDblClick: false
+          },
+          disableDoubleClickZoom: true,
+          keyboardShortcuts: false,
+          pinchZoom: false
+        }}
       />
       <CursorDot />
 
-      {/* ✅ عرض الإحداثيات والاسم أسفل الخريطة */}
       <div style={{
         position: 'absolute',
         bottom: 10,
@@ -105,7 +132,8 @@ function MyMap() {
         fontSize: '14px',
         boxShadow: '0 2px 6px rgba(0,0,0,0.2)',
         direction: 'rtl',
-        zIndex: 10000
+        zIndex: 10000,
+        touchAction: 'none'
       }}>
         📍 الإحداثيات: {currentCoords.lat.toFixed(6)}, {currentCoords.lng.toFixed(6)} <br />
         {lineName && <>📌 الاسم: {lineName}</>}
@@ -116,7 +144,6 @@ function MyMap() {
   );
 }
 
-// 🔴 Red Dot
 function CursorDot() {
   return (
     <div
@@ -136,13 +163,7 @@ function CursorDot() {
   );
 }
 
-// 🔍 نقطة قريبة من segment
-function closestPointOnSegment(
-  p,
-  a,
-  b,
-  google
-) {
+function closestPointOnSegment(p, a, b, google) {
   const dx = b.lng() - a.lng();
   const dy = b.lat() - a.lat();
   const lengthSquared = dx * dx + dy * dy;
