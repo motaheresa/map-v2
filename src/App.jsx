@@ -6,7 +6,7 @@ import TeraaMap from './TeraaMap'; // ده اسم الملف اللي فيه ا�
   function App() {
     return (
       <div style={{ height: '100vh' }}>
-      <MyGeoJsonMap />
+      <MyGeoJsonMap  />
     </div>
     );
   }

@@ -1,930 +1,965 @@
-import { useState, useEffect, useRef, useCallback, memo } from 'react';
-import { MapContainer, TileLayer, Polyline, Popup, Marker, useMap, useMapEvents } from 'react-leaflet';
-import L from 'leaflet';
-import 'leaflet/dist/leaflet.css';
-import RBush from 'rbush'; // Import RBush for spatial indexing
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { MapPin, Copy, Download, Home, Info, Search, Satellite, Map as MapIcon, X } from 'lucide-react'; 
 
-// --- Utility Functions (Outside of Components) ---
-
-/**
- * Debounce function to limit how often a function is called.
- * It waits for a specified delay after the last call before executing.
- */
-function debounce(func, delay) {
-  let timeout;
-  return function(...args) {
-    const context = this;
-    clearTimeout(timeout);
-    timeout = setTimeout(() => func.apply(context, args), delay);
-  };
-}
-
-/**
- * Throttle function to limit how often a function is called.
- * It executes the function at most once within a given time frame.
- */
-function throttle(func, limit) {
-  let inThrottle;
-  let lastResult;
-  let lastRan;
-  return function(...args) {
-    const context = this;
-    if (!lastRan) {
-      func.apply(context, args);
-      lastRan = Date.now();
-    } else {
-      clearTimeout(inThrottle);
-      inThrottle = setTimeout(function() {
-        if ((Date.now() - lastRan) >= limit) {
-          lastResult = func.apply(context, args);
-          lastRan = Date.now();
-        }
-      }, limit - (Date.now() - lastRan));
-    }
-    return lastResult;
-  };
-}
-
-// Default center (Saudi Arabia region from the screenshot)
-const defaultCenter = [22.3964614, 34.8516932];
-
-// Custom icon for the user's current location (arrow)
-const createUserLocationIcon = (rotationAngle = 0) => {
-  return L.divIcon({
-    className: 'custom-user-icon',
-    html: `<img src="https://cdn-icons-png.flaticon.com/512/447/447031.png" style="transform: rotate(${rotationAngle}deg); width: 32px; height: 32px;" />`,
-    iconSize: [32, 32],
-    iconAnchor: [16, 16],
-  });
+// الإحداثيات الأولية لمركز الخريطة
+const initialMapCenter = {
+  lat: 30.885, // خط العرض التقريبي لـ 'جرارا معنيا'
+  lng: 30.625 // خط الطول التقريبي لـ 'جرارا معنيا'
 };
 
-/**
- * Calculates the distance between two geographical coordinates using the Haversine formula.
- */
-function calculateDistance(coord1, coord2) {
-  const toRad = (value) => (value * Math.PI) / 180;
+// تحديد أقصى مسافة (بالكيلومترات) للكشف عن النقاط المعروضة
+const MAX_DISTANCE_TO_POINT_KM = 0.05; // 50 مترًا، دقيقة جداً للنقاط الفردية
 
-  const [lat1, lon1] = coord1;
-  const [lat2, lon2] = coord2;
+// تحديد أقصى مسافة (بالكيلومترات) للكشف عن الخطوط أو حواف المضلعات
+const MAX_DISTANCE_TO_LINE_OR_EDGE_KM = 1.0; // 1.0 كيلومتر (1000 متر) كخيار احتياطي
 
-  const R = 6371; // Earth's radius in km
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-    Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
+// تأخير Debounce بالمللي ثانية لتحديثات الموقع
+const DEBOUNCE_DELAY_MS = 150; 
 
-/**
- * Calculates the bearing (direction) from point 1 to point 2.
- */
-function calculateBearing(lat1, lon1, lat2, lon2) {
-  const toRad = (deg) => deg * Math.PI / 180;
-  const toDeg = (rad) => rad * 180 / Math.PI;
-
-  const φ1 = toRad(lat1);
-  const φ2 = toRad(lat2);
-  const Δλ = toRad(lon2 - lon1);
-
-  const y = Math.sin(Δλ) * Math.cos(φ2);
-  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
-  const θ = Math.atan2(y, x);
-  let bearing = toDeg(θ);
-  return (bearing + 360) % 360;
-}
-
-/**
- * Check if a point is inside a polygon using ray casting algorithm
- * Point format: [lat, lng]
- * Polygon format: [[lat, lng], [lat, lng], ...]
- */
-function isPointInPolygon(point, polygon) {
-  const [x, y] = point; // point is [lat, lng]
-  let inside = false;
-
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const [xi, yi] = polygon[i];
-    const [xj, yj] = polygon[j];
-
-    // Check if the ray from point (x,y) crosses the segment (xi,yi)-(xj,yj)
-    if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
-      inside = !inside;
-    }
-  }
-  return inside;
-}
-
-/**
- * Check if a point is near a line (within a certain distance)
- * Point format: [lat, lng]
- * LineCoords format: [[lng, lat], [lng, lat], ...] (GeoJSON standard)
- */
-function isPointNearLine(point, lineCoords, tolerance = 0.001) {
-  const [pointLat, pointLng] = point;
-
-  for (let i = 0; i < lineCoords.length - 1; i++) {
-    // GeoJSON coordinates are [lng, lat], convert to [lat, lng] for calculation
-    const [lng1, lat1] = lineCoords[i];
-    const [lng2, lat2] = lineCoords[i + 1];
-
-    // Calculate distance from point to line segment
-    const distance = distanceToLineSegment(pointLat, pointLng, lat1, lng1, lat2, lng2);
-    if (distance < tolerance) {
-      return true;
-    }
-  }
-  return false;
+// --- بداية KDBush المضمنة ---
+class KDBush {
+  constructor(points) {
+    this.points = points; 
+    this.ids = [];
+    this.coords = [];
+    this.tree = []; 
+    this.nodeSize = 64; 
+    this.init();
   }
 
-/**
- * Calculate distance from a point to a line segment
- */
-function distanceToLineSegment(px, py, x1, y1, x2, y2) {
-  let dx = x2 - x1;
-  let dy = y2 - y1;
-
-  if (dx !== 0 || dy !== 0) {
-    let t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy);
-
-    if (t > 1) {
-      dx = px - x2;
-      dy = py - y2;
-    } else if (t > 0) {
-      dx = px - (x1 + dx * t);
-      dy = py - (y1 + dy * t);
-    } else {
-      dx = px - x1;
-      dy = py - y1;
+  init() {
+    for (let i = 0; i < this.points.length; i++) {
+      this.ids[i] = i; 
+      this.coords[2 * i] = this.points[i].x; 
+      this.coords[2 * i + 1] = this.points[i].y; 
     }
-  } else {
-    dx = px - x1;
-    dy = py - y1;
+    this.sort(0, this.ids.length - 1, 0);
   }
-  return Math.sqrt(dx * dx + dy * dy);
+
+  sort(left, right, axis) {
+    if (right - left <= this.nodeSize) return;
+    const median = left + Math.floor((right - left) / 2);
+    this.select(left, right, median, axis);
+    this.sort(left, median - 1, 1 - axis);
+    this.sort(median + 1, right, 1 - axis);
+  }
+
+  select(left, right, k, axis) {
+    while (right > left) {
+      if (right - left > 600) { /* ... omitted for brevity ... */ }
+      const t = this.coords[2 * this.ids[k] + axis];
+      let i = left;
+      let j = right;
+      this.swap(left, k);
+      if (this.coords[2 * this.ids[right] + axis] > t) this.swap(left, right);
+      while (i < j) {
+        this.swap(i++, j--);
+        while (this.coords[2 * this.ids[i] + axis] < t) i++;
+        while (this.coords[2 * this.ids[j] + axis] > t) j--;
+      }
+      if (this.coords[2 * this.ids[left] + axis] === t) this.swap(left, j);
+      else { j++; this.swap(j, right); }
+      if (j <= k) left = j + 1;
+      if (k <= j) right = j - 1;
+    }
+  }
+
+  swap(i, j) {
+    const tmp = this.ids[i];
+    this.ids[i] = this.ids[j];
+    this.ids[j] = tmp;
+  }
+
+  range(minX, minY, maxX, maxY) {
+    const results = [];
+    for (let i = 0; i < this.ids.length; i++) {
+      const id = this.ids[i]; 
+      const x = this.coords[2 * id];
+      const y = this.coords[2 * id + 1];
+      if (x >= minX && x <= maxX && y >= minY && y <= maxY) {
+        results.push(id); 
+      }
+    }
+    return results;
+  }
+  finish() { /* No-op */ }
 }
-
-// --- React Components ---
-
-/**
- * Component to track map center and update coordinates
- * Utilizes RBush for efficient spatial queries on GeoJSON data.
- * Debounces calls to checkGeoJSONLocation for real-time updates during map move.
- * Throttles Nominatim API calls to prevent rate limiting.
- */
-const MapCenterTracker = ({ setCenterCoordinates, setLocationInfo, geojson }) => {
-  const rbushRef = useRef(null); // Ref to store our spatial index
-
-  // Build the spatial index whenever geojson data changes
-  useEffect(() => {
-    if (geojson && geojson.features) {
-      const tree = new RBush();
-      const items = geojson.features.map(feature => {
-        // Calculate bounding box for each feature.
-        // L.GeoJSON can help with this, creating a temporary layer.
-        const leafletLayer = L.geoJSON(feature);
-        const featureBounds = leafletLayer.getBounds();
-
-        if (featureBounds.isValid()) {
-          // RBush expects [minX, minY, maxX, maxY]
-          // Leaflet bounds are [south, west] - [north, east]
-          // So, minX=west, minY=south, maxX=east, maxY=north
-          return {
-            minX: featureBounds.getWest(),
-            minY: featureBounds.getSouth(),
-            maxX: featureBounds.getEast(),
-            maxY: featureBounds.getNorth(),
-            feature: feature // Store the actual feature data for later precise checks
-          };
-        }
-        return null; // Skip invalid features
-      }).filter(Boolean); // Filter out any nulls
-
-      tree.load(items);
-      rbushRef.current = tree;
-    } else {
-      rbushRef.current = null; // Clear index if no geojson
-    }
-  }, [geojson]);
-
-  // Function to check location against GeoJSON using spatial index
-  const checkGeoJSONLocation = useCallback((lat, lng) => {
-    if (!rbushRef.current) return null;
-
-    // Create a small search envelope around the point [lng, lat]
-    // A small buffer (e.g., 0.0001 degrees) is often good to catch features near the point.
-    const searchTolerance = 0.0001; // Adjust this value as needed
-    const searchBounds = {
-        minX: lng - searchTolerance,
-        minY: lat - searchTolerance,
-        maxX: lng + searchTolerance,
-        maxY: lat + searchTolerance
-    };
-
-    // Query the spatial index for features whose bounding boxes overlap with the search point
-    const potentialFeatures = rbushRef.current.search(searchBounds);
-
-    // Now, perform precise (and more expensive) point-in-polygon/line checks
-    // only on the *potential* features returned by the index.
-    const point = [lat, lng]; // For isPointInPolygon/isPointNearLine
-
-    for (const item of potentialFeatures) {
-      const feature = item.feature;
-      if (!feature.geometry || !feature.properties) continue;
-
-      const { geometry, properties } = feature;
-      const featureName = properties.name || properties.NAME || properties.title;
-
-      if (!featureName) continue;
-
-      switch (geometry.type) {
-        case 'Polygon':
-          // GeoJSON coords are [lng, lat], convert to [lat, lng] for isPointInPolygon
-          const polygonCoords = geometry.coordinates[0].map(([lng, lat]) => [lat, lng]);
-          if (isPointInPolygon(point, polygonCoords)) {
-            return featureName;
-          }
-          break;
-
-        case 'MultiPolygon':
-          for (const polygon of geometry.coordinates) {
-            const polygonCoords = polygon[0].map(([lng, lat]) => [lat, lng]);
-            if (isPointInPolygon(point, polygonCoords)) {
-              return featureName;
-            }
-          }
-          break;
-
-        case 'LineString':
-          if (isPointNearLine(point, geometry.coordinates)) {
-            return featureName;
-          }
-          break;
-
-        case 'MultiLineString':
-          for (const line of geometry.coordinates) {
-            if (isPointNearLine(point, line)) {
-              return featureName;
-            }
-          }
-          break;
-
-        case 'Point':
-          const [pointLng, pointLat] = geometry.coordinates;
-          const distance = calculateDistance([lat, lng], [pointLat, pointLng]);
-          if (distance < 0.01) { // Within 10 meters
-            return featureName;
-          }
-          break;
-      }
-    }
-    return null;
-  }, []); // Dependencies are stable (rbushRef is a ref, its value changes but ref itself is stable)
-
-  // Debounced version for 'move' event (for real-time GeoJSON checks)
-  const checkGeoJSONLocationDebounced = useRef(
-    debounce((lat, lng) => {
-      const geojsonName = checkGeoJSONLocation(lat, lng);
-      if (geojsonName) {
-        setLocationInfo({
-          name: `${geojsonName} (من البيانات المحلية)`,
-          coordinates: `${lat.toFixed(8)}, ${lng.toFixed(8)}`,
-          isFromGeoJSON: true
-        });
-      }
-    }, 150) // Adjust debounce time (e.g., 50ms, 100ms, 200ms) for responsiveness
-  ).current; // .current ensures the debounced function reference is stable
-
-  // NEW: Debounced version for setting center coordinates
-  const setCenterCoordinatesDebounced = useRef(
-    debounce((lat, lng) => {
-      setCenterCoordinates([lat, lng]);
-    }, 50) // Adjust this debounce time (e.g., 50ms, 100ms, 200ms)
-            // Smaller delay for a more responsive coordinate display, larger for more performance gain
-  ).current;
-
-  // Throttled version for Nominatim API calls
-  const throttledNominatimCall = useRef(
-    throttle(async (lat, lng) => {
-      try {
-        const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=14&addressdetails=1`);
-        const data = await response.json();
-        const locationName = data.display_name || `${lat.toFixed(8)}, ${lng.toFixed(8)}`;
-        setLocationInfo({
-          name: locationName,
-          coordinates: `${lat.toFixed(8)}, ${lng.toFixed(8)}`,
-          isFromGeoJSON: false
-        });
-      } catch (error) {
-        console.error('Error with Nominatim reverse geocoding:', error);
-        // Fallback to coordinates if API call fails
-        setLocationInfo({
-          name: `${lat.toFixed(8)}, ${lng.toFixed(8)}`,
-          coordinates: `${lat.toFixed(8)}, ${lng.toFixed(8)}`,
-          isFromGeoJSON: false
-        });
-      }
-    }, 1000) // Throttle to 1 call per second for Nominatim API
-  ).current;
-
-  const map = useMapEvents({
-    moveend: () => { // Async not needed directly on event listener
-      const center = map.getCenter();
-      const lat = center.lat;
-      const lng = center.lng;
-
-      // On moveend, always set the final coordinates immediately for accuracy
-      setCenterCoordinates([lat, lng]); // No debounce here, get final exact coordinates
-
-      const geojsonName = checkGeoJSONLocation(lat, lng);
-
-      if (geojsonName) {
-        setLocationInfo({
-          name: `${geojsonName} (من البيانات المحلية)`,
-          coordinates: `${lat.toFixed(8)}, ${lng.toFixed(8)}`,
-          isFromGeoJSON: true
-        });
-      } else {
-        // Use the throttled Nominatim call here if no local feature is found
-        throttledNominatimCall(lat, lng);
-      }
-    },
-    move: () => {
-      const center = map.getCenter();
-      const lat = center.lat;
-      const lng = center.lng;
-
-      // Use the debounced function for updating the displayed coordinates
-      setCenterCoordinatesDebounced(lat, lng);
-
-      // Use the debounced function to check GeoJSON location during move
-      checkGeoJSONLocationDebounced(lat, lng);
-    }
-  });
-
-  return null;
-};
-
-/**
- * Component to load and display GeoJSON layers efficiently.
- * Wrapped with React.memo for performance optimization.
- */
-const GeoJSONLayerComponent = memo(({ data, onPolylineClick, highlightedFeature }) => {
-  const map = useMap();
-  const geoJsonLayerRef = useRef(null);
-
-  // Function to style GeoJSON features
-  // useCallback memoizes this function, only recreating if highlightedFeature changes
-  const style = useCallback((feature) => {
-    const isHighlighted = highlightedFeature &&
-                          feature.properties && highlightedFeature.properties &&
-                          feature.properties.name === highlightedFeature.properties.name;
-    return {
-      color: isHighlighted ? 'red' : 'blue',
-      weight: isHighlighted ? 5 : 3,
-      opacity: 0.8
-    };
-  }, [highlightedFeature]);
-
-  // Function to handle interactions with GeoJSON features
-  // useCallback memoizes this function, only recreating if onPolylineClick changes
-  const onEachFeature = useCallback((feature, layer) => {
-    if (feature.properties && feature.properties.name) {
-      const popupContent = `
-        <div>
-          <strong>الاسم:</strong> ${feature.properties.name || 'غير معروف'}<br />
-          <strong>عدد النقاط:</strong> ${feature.geometry.coordinates.length}
-        </div>
-      `;
-      layer.bindPopup(popupContent);
-    }
-
-    layer.on({
-      click: (e) => {
-        // Ensure the click event also triggers the onPolylineClick prop
-        if (onPolylineClick) {
-          onPolylineClick({
-            name: feature.properties.name || 'غير معروف',
-            coords: [e.latlng.lat, e.latlng.lng],
-            feature: feature,
-          });
-        }
-      }
-    });
-  }, [onPolylineClick]);
-
-  useEffect(() => {
-    if (map && data) {
-      // Remove existing GeoJSON layer if it exists
-      if (geoJsonLayerRef.current) {
-        map.removeLayer(geoJsonLayerRef.current);
-      }
-
-      // Create new L.geoJSON layer with provided data, style, and interaction handlers
-      geoJsonLayerRef.current = L.geoJSON(data, {
-        style: style,
-        onEachFeature: onEachFeature
-      }).addTo(map);
-
-      // Fit map bounds to GeoJSON data on initial load or data change
-      const bounds = geoJsonLayerRef.current.getBounds();
-      if (bounds.isValid()) {
-        map.fitBounds(bounds, { padding: [50, 50] });
-      }
-    }
-
-    // Clean up when component unmounts or data changes
-    return () => {
-      if (map && geoJsonLayerRef.current) {
-        map.removeLayer(geoJsonLayerRef.current);
-      }
-    };
-  }, [map, data, style, onEachFeature]); // Re-run effect if data or styling/interaction functions change
-
-  // This effect updates the style of existing layers when highlightedFeature changes
-  // It iterates over layers instead of recreating the whole GeoJSON layer
-  useEffect(() => {
-    if (geoJsonLayerRef.current) {
-      geoJsonLayerRef.current.eachLayer(layer => {
-        const feature = layer.feature;
-        const newStyle = style(feature); // Use the memoized style function to get new style
-        layer.setStyle(newStyle); // Apply the new style to the individual layer
-      });
-    }
-  }, [highlightedFeature, style]); // Re-run if highlightedFeature or style function changes
-
-  return null;
-});
+// --- نهاية KDBush المضمنة ---
 
 
-/**
- * Component to track and update user's geographical location.
- */
-const LocationTracker = ({ setUserLocation, setRotationAngle }) => {
-  const lastPositionRef = useRef(null);
+const MapComponent = () => {
+  const [isMapApiLoaded, setIsMapApiLoaded] = useState(false);
+  const [isTurfLoaded, setIsTurfLoaded] = useState(false);
+  const [isKDBushLoaded] = useState(true); 
+  
+  const [map, setMap] = useState(null);
+  const [geojsonData, setGeojsonData] = useState(null); // البيانات الأصلية (خطوط ومضلعات)
+  const [processedPointsData, setProcessedPointsData] = useState(null); // البيانات المعالجة (نقاط فردية من الرؤوس)
+  
+  const [currentCoords, setCurrentCoords] = useState({ lat: initialMapCenter.lat, lng: initialMapCenter.lng });
+  const [geoJsonLocationName, setGeoJsonLocationName] = useState(null);
 
-  useEffect(() => {
-    // Watch for changes in the user's geolocation
-    const watchId = navigator.geolocation.watchPosition(
-      (position) => {
-        const { latitude, longitude } = position.coords;
-        const newPosition = [latitude, longitude];
+  const [spatialIndex, setSpatialIndex] = useState(null); // للفهرسة السريعة للنقاط المعالجة
 
-        // Calculate bearing only if a previous position exists and it's a new position
-        if (lastPositionRef.current && (lastPositionRef.current[0] !== newPosition[0] || lastPositionRef.current[1] !== newPosition[1])) {
-          const bearing = calculateBearing(
-            lastPositionRef.current[0],
-            lastPositionRef.current[1],
-            newPosition[0],
-            newPosition[1]
-          );
-          setRotationAngle(bearing);
-        } else if (!lastPositionRef.current) {
-          // If it's the first position, set rotation to 0 (North)
-          setRotationAngle(0);
-        }
+  const debounceTimeoutRef = useRef(null);
+  const mapRef = useRef(null); 
 
-        setUserLocation(newPosition);
-        lastPositionRef.current = newPosition;
-      },
-      (err) => {
-        console.error('Error getting user location:', err);
-      },
-      // Geolocation options for high accuracy
-      { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
-    );
+  const updateLocationDisplayRef = useRef();
+  const debouncedUpdateLocationDisplayRef = useRef();
 
-    // Clean up by clearing the watch when the component unmounts
-    return () => navigator.geolocation.clearWatch(watchId);
-  }, [setUserLocation, setRotationAngle]);
-
-  return null;
-};
-
-// Main TeraaMap React Component
-export default function TeraaMap() {
-  // State variables for map data and UI controls
-  const [geojson, setGeojson] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [userLocation, setUserLocation] = useState(null);
-  const [rotationAngle, setRotationAngle] = useState(0); // For user location marker orientation
-  const [mapType, setMapType] = useState('roadmap'); // 'roadmap' or 'satellite'
+  // حالات جديدة لعناصر التحكم التفاعلية
+  const [showSearchInput, setShowSearchInput] = useState(false);
   const [searchedPlaceInput, setSearchedPlaceInput] = useState('');
-  const [highlightedFeature, setHighlightedFeature] = useState(null); // The currently selected GeoJSON feature
-  const [centerCoordinates, setCenterCoordinates] = useState(defaultCenter); // Coordinates displayed at the bottom
-  const [locationInfo, setLocationInfo] = useState(null); // Name of the location at map center
-  const [searchResultInfo, setSearchResultInfo] = useState(null); // Info about a searched/clicked place
-  const [showSearchInput, setShowSearchInput] = useState(false); // State to control search input visibility
+  const [searchResultInfo, setSearchResultInfo] = useState(null);
+  const [showAboutModal, setShowAboutModal] = useState(false);
+  const [mapType, setMapType] = useState('roadmap'); // 'roadmap' أو 'satellite'
 
-  const mapRef = useRef(null); // Reference to the Leaflet map instance
+  // دالة لتحميل السكربت الخارجي والاستقصاء عن كائنه العام
+  const loadExternalScript = useCallback((src, id, globalVarName, setLoadedState) => {
+    return new Promise((resolve) => {
+      if (document.getElementById(id)) {
+        console.log(`السكربت ${id} موجود بالفعل. جاري التحقق من الكائن العام.`);
+        pollForGlobal(globalVarName, setLoadedState, resolve, id);
+        return;
+      }
 
-  // Fetch GeoJSON data on component mount
+      const script = document.createElement('script');
+      script.src = src;
+      script.id = id;
+      script.async = true; 
+      script.defer = true; 
+      script.onload = () => {
+        console.log(`السكربت ${id} تم تحميله. جاري الاستقصاء عن ${globalVarName}...`);
+        pollForGlobal(globalVarName, setLoadedState, resolve, id);
+      };
+      script.onerror = () => {
+        console.error(`خطأ في تحميل السكربت: ${src}. جاري تعيين حالة ${id} إلى false.`);
+        setLoadedState(false); 
+        resolve(); 
+      };
+      document.head.appendChild(script); 
+    });
+  }, []);
+
+  // دالة مساعدة للاستقصاء عن متغير عام للتأكد من توفره
+  const pollForGlobal = useCallback((globalVarName, setLoadedState, resolvePromise, scriptId, attempts = 0) => {
+    const maxAttempts = 50; 
+    const intervalTime = 100; 
+
+    if (window[globalVarName]) {
+      console.log(`تم العثور على الكائن العام ${globalVarName} من ${scriptId} بعد ${attempts * intervalTime} مللي ثانية.`);
+      setLoadedState(true);
+      resolvePromise();
+    } else if (attempts < maxAttempts) {
+      setTimeout(() => {
+        pollForGlobal(globalVarName, setLoadedState, resolvePromise, scriptId, attempts + 1);
+      }, intervalTime);
+    } else {
+      console.error(`انتهت المهلة: لم يتم العثور على الكائن العام ${globalVarName} من ${scriptId} بعد ${maxAttempts} محاولة.`);
+      setLoadedState(false); 
+      resolvePromise(); 
+    }
+  }, []);
+
+  // 1. تحميل واجهة برمجة تطبيقات خرائط جوجل وسكربت Turf.js
   useEffect(() => {
-    // Fetch the simplified and uncompressed GeoJSON file
-    fetch('/result_more_simplified.geojson')
-      .then(res => {
-        if (!res.ok) {
-          throw new Error(`HTTP error! status: ${res.status}`)
+    const googleMapsApiKey = 'AIzaSyC5MHgv-Vax9PJqB2kROWaiVYD5AtFHnIc'; 
+
+    window.initMap = () => { 
+      console.log("تم تشغيل رد اتصال Google Maps initMap.");
+      setIsMapApiLoaded(true); 
+    };
+
+    const loadLibraries = async () => {
+      console.log("جاري بدء تحميل المكتبات الخارجية الأساسية...");
+      try {
+        await loadExternalScript(
+          `https://maps.googleapis.com/maps/api/js?key=${googleMapsApiKey}&callback=initMap`,
+          'google-map-script',
+          'google', 
+          setIsMapApiLoaded
+        );
+        
+        await loadExternalScript(
+          'https://cdnjs.cloudflare.com/ajax/libs/Turf.js/5.1.6/turf.min.js', 
+          'turf-script',
+          'turf', 
+          setIsTurfLoaded
+        );
+
+        console.log("تم بدء عملية تحميل المكتبات الخارجية. تحقق من حالات التحميل الفردية في السجلات.");
+
+      } catch (error) {
+        console.error("فشل في بدء تحميل واحدة أو أكثر من المكتبات الخارجية:", error);
+      }
+    };
+
+    loadLibraries();
+  }, [loadExternalScript]); 
+
+  // 2. جلب بيانات GeoJSON الأصلية ومعالجتها إلى نقاط فردية
+  useEffect(() => {
+    fetch('/d_wgs84.json') 
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`خطأ HTTP! الحالة: ${response.status}`);
         }
-        return res.json();
+        return response.json();
       })
       .then(data => {
-        setGeojson(data);
-        setLoading(false);
+        setGeojsonData(data); // حفظ البيانات الأصلية
+        console.log("تم جلب بيانات GeoJSON الأصلية بنجاح من d_wgs84.json. عدد الميزات الأصلية:", data.features ? data.features.length : 0);
+
+        // معالجة البيانات: تحويل LineStrings والمضلعات إلى نقاط فردية (كل رأس نقطة)
+        const newProcessedPointsFeatures = [];
+        data.features.forEach(originalFeature => {
+          const properties = { ...originalFeature.properties }; 
+          const featureType = originalFeature.geometry.type;
+
+          if (featureType === 'LineString') {
+            originalFeature.geometry.coordinates.forEach((coord) => {
+              newProcessedPointsFeatures.push({
+                type: 'Feature',
+                properties: { 
+                  ...properties,
+                  originalType: featureType, // النوع الأصلي للميزة
+                },
+                geometry: {
+                  type: 'Point',
+                  coordinates: coord // [lng, lat]
+                }
+              });
+            });
+          } else if (featureType === 'Polygon') {
+            // للمضلعات، نأخذ نقاط الحلقة الخارجية فقط
+            if (originalFeature.geometry.coordinates && originalFeature.geometry.coordinates[0]) {
+              originalFeature.geometry.coordinates[0].forEach((coord) => {
+                newProcessedPointsFeatures.push({
+                  type: 'Feature',
+                  properties: { 
+                    ...properties,
+                    originalType: featureType, 
+                  },
+                  geometry: {
+                    type: 'Point',
+                    coordinates: coord
+                  }
+                });
+              });
+            }
+          } else if (featureType === 'MultiPolygon') {
+              if (originalFeature.geometry.coordinates) {
+                  originalFeature.geometry.coordinates.forEach(polygon => {
+                      if (polygon && polygon[0]) { 
+                          polygon[0].forEach((coord) => {
+                              newProcessedPointsFeatures.push({
+                                  type: 'Feature',
+                                  properties: { 
+                                      ...properties,
+                                      originalType: featureType, 
+                                  },
+                                  geometry: {
+                                      type: 'Point',
+                                      coordinates: coord
+                                  }
+                              });
+                          });
+                      }
+                  });
+              }
+          } else if (featureType === 'Point') {
+              // إذا كانت الميزة الأصلية نقطة بالفعل، أضفها مباشرة
+              newProcessedPointsFeatures.push({
+                  type: 'Feature',
+                  properties: {
+                      ...properties,
+                      originalType: featureType, 
+                  },
+                  geometry: {
+                      type: 'Point',
+                      coordinates: originalFeature.geometry.coordinates
+                  }
+              });
+          }
+        });
+        setProcessedPointsData({ type: 'FeatureCollection', features: newProcessedPointsFeatures });
+        console.log(`تم معالجة بيانات GeoJSON بنجاح إلى ${newProcessedPointsFeatures.length} نقطة للعرض.`);
       })
-      .catch(err => {
-        console.error('Error loading geojson:', err);
-        setLoading(false);
-        // Use a custom message box instead of alert in production
-        alert('حدث خطأ أثناء تحميل بيانات الخريطة.');
+      .catch(error => {
+        console.error("خطأ في جلب أو معالجة GeoJSON من d_wgs84.json:", error);
       });
-  }, []); // Empty dependency array ensures this runs once on mount
+  }, []); 
 
-  // Callback for when a polyline (GeoJSON feature) is clicked
-  const handlePolylineClick = useCallback(({ name, coords, feature }) => {
-    setHighlightedFeature(feature); // Highlight the clicked feature
-    const map = mapRef.current;
-    if (map && feature.geometry.coordinates.length > 0) {
-      // GeoJSON coordinates are [lng, lat], convert to [lat, lng] for Leaflet
-      const startCoord = feature.geometry.coordinates[0].slice().reverse(); // [lat, lng]
-      map.setView(startCoord, 14); // Pan and zoom to the start of the feature
+  // 3. checkPointInGeoJSON المحسّنة (منطق تحديد الموقع الدقيق للخطوط والمضلعات)
+  const checkPointInGeoJSON = useCallback((lat, lng) => {
+    console.groupCollapsed(`تم استدعاء checkPointInGeoJSON لـ خط عرض: ${lat.toFixed(6)}, خط طول: ${lng.toFixed(6)}`);
 
-      // Set search result info for the clicked feature
-      setSearchResultInfo({
-        name: name,
-        coordinates: `${startCoord[0].toFixed(8)}, ${startCoord[1].toFixed(8)}`,
-        feature: feature
-      });
+    if (!geojsonData || !processedPointsData || !spatialIndex || !isTurfLoaded || !isKDBushLoaded || !window.turf) {
+        console.log("الاعتماديات غير جاهزة لـ checkPointInGeoJSON. جاري تخطي التحقق.");
+        console.log("حالات الاعتمادية الحالية:", { geojsonData: !!geojsonData, processedPointsData: !!processedPointsData, spatialIndex: !!spatialIndex, isTurfLoaded, isKDBushLoaded, turf: !!window.turf });
+        console.groupEnd();
+        return null; 
     }
-  }, []);
 
-  // Callback to toggle map tile layer type (roadmap or satellite)
-  const handleMapTypeChange = useCallback(() => {
-    setMapType(prevType => (prevType === 'roadmap' ? 'satellite' : 'roadmap'));
-  }, []);
+    const queryPoint = window.turf.point([lng, lat]); 
+    let finalDetectedName = null;
 
-  // Callback to pan the map to the user's current location
-  const handleGoHome = useCallback(() => {
-    const map = mapRef.current;
-    if (map && userLocation) {
-      map.setView(userLocation, 15); // Pan and zoom to user location
-    } else {
-      // Use a custom message box instead of alert in production
-      alert('لا يتوفر موقع المستخدم حاليًا لتركز عليه الخريطة.');
-    }
-  }, [userLocation]);
+    // المرحلة 1: البحث عن أقرب نقطة معروضة (زرقاء)
+    let nearestDisplayedPointName = null;
+    let minDistanceToDisplayedPoint = Infinity;
 
-  // Callback to copy map center coordinates to clipboard
-  const handleCopyCoordinates = useCallback(() => {
-    if (centerCoordinates) {
-      const coordsString = `${centerCoordinates[0].toFixed(8)}, ${centerCoordinates[1].toFixed(8)}`;
+    const searchRadiusDegreesForPoints = MAX_DISTANCE_TO_POINT_KM / 111.32; 
+    const minLngPoints = lng - searchRadiusDegreesForPoints;
+    const maxLngPoints = lng + searchRadiusDegreesForPoints;
+    const minLatPoints = lat - searchRadiusDegreesForPoints;
+    const maxLatPoints = lat + searchRadiusDegreesForPoints;
+
+    const potentialPointIndices = spatialIndex.index.range(minLngPoints, minLatPoints, maxLngPoints, maxLatPoints);
+    console.log(`KDBush وجد ${potentialPointIndices.length} نقطة محتملة (زرقاء) في مربع التحديد.`);
+
+    for (const originalIndex of potentialPointIndices) {
+      const feature = spatialIndex.featureMap.get(originalIndex); 
+      if (!feature || !feature.geometry || feature.geometry.type !== 'Point') continue;
+
+      const featureName = feature.properties?.Name || feature.properties?.name || 'ميزة غير مسماة';
       try {
-        const textarea = document.createElement('textarea');
-        textarea.value = coordsString;
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand('copy'); // Deprecated but widely supported for iframes
-        document.body.removeChild(textarea);
-        // Use a custom message box instead of alert in production
-        alert('تم نسخ الإحداثيات!');
-      } catch (err) {
-        console.error('Failed to copy text: ', err);
-        // Use a custom message box instead of alert in production
-        alert('فشل نسخ الإحداثيات.');
+        const distance = window.turf.distance(queryPoint, feature, { units: 'kilometers' });
+        if (distance <= MAX_DISTANCE_TO_POINT_KM && distance < minDistanceToDisplayedPoint) {
+          minDistanceToDisplayedPoint = distance; 
+          nearestDisplayedPointName = featureName;
+          console.log(`  [المرحلة 1] تم العثور على أقرب نقطة معروضة: "${featureName}" على مسافة ${distance.toFixed(3)} كم.`);
+        }
+      } catch (e) {
+        console.warn(`خطأ في حساب المسافة للنقطة المعروضة ("${featureName}"):`, e);
       }
     }
-  }, [centerCoordinates]);
 
-  // Callback to search for a place within the loaded GeoJSON data
-  const handleSearch = useCallback(() => {
-    if (!geojson || !searchedPlaceInput.trim()) {
-      setHighlightedFeature(null);
+    if (nearestDisplayedPointName) {
+        finalDetectedName = nearestDisplayedPointName;
+        console.log(`[القرار النهائي] تم الكشف عن اسم من أقرب نقطة معروضة: ${finalDetectedName}`);
+        console.groupEnd();
+        return finalDetectedName;
+    }
+
+    // المرحلة 2: إذا لم يتم العثور على نقطة معروضة قريبة، فابحث في الخطوط الأصلية والمضلعات
+    console.log("[المرحلة 2] لم يتم العثور على نقطة معروضة قريبة. جاري البحث في الخطوط/المضلعات الأصلية.");
+    let bestContainedPolygonName = null; 
+    let minContainedArea = Infinity; 
+    let nearestLineOrEdgeName = null; 
+    let minDistanceToLineOrEdge = Infinity; 
+
+    // مسافة بحث أكبر قليلاً للخطوط/المضلعات
+    const searchRadiusDegreesForGeometries = MAX_DISTANCE_TO_LINE_OR_EDGE_KM / 111.32; 
+    const minLngGeometries = lng - searchRadiusDegreesForGeometries;
+    const maxLngGeometries = lng + searchRadiusDegreesForGeometries;
+    const minLatGeometries = lat - searchRadiusDegreesForGeometries;
+    const maxLatGeometries = lat + searchRadiusDegreesForGeometries;
+
+    // بما أن KDBush تم بناؤها على centroids الميزات الأصلية، يمكننا استخدامها هنا أيضاً للميزات الأصلية
+    // لتقليل عدد الميزات التي سنقوم بتحليلها بالتفصيل
+    const potentialOriginalFeatureIndices = spatialIndex.index.range(minLngGeometries, minLatGeometries, maxLngGeometries, maxLatGeometries);
+    console.log(`  KDBush وجد ${potentialOriginalFeatureIndices.length} ميزة أصلية محتملة في مربع التحديد الأكبر.`);
+
+
+    for (const originalIndex of potentialOriginalFeatureIndices) {
+        const feature = spatialIndex.featureMap.get(originalIndex); // الحصول على الميزة الأصلية من الخريطة
+        if (!feature || !feature.geometry) continue;
+
+        const featureName = feature.properties?.Name || feature.properties?.name || 'ميزة غير مسماة';
+
+        if (feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon') {
+            try {
+                if (window.turf.booleanPointInPolygon(queryPoint, feature)) {
+                    let currentPolygonArea = 0;
+                    try {
+                        currentPolygonArea = window.turf.area(feature); 
+                        if (!isFinite(currentPolygonArea) || currentPolygonArea <= 0) {
+                            currentPolygonArea = Infinity; 
+                        }
+                    } catch (areaError) {
+                        console.warn(`  [المرحلة 2 - مضلع] خطأ في حساب مساحة المضلع ("${featureName}"):`, areaError);
+                        currentPolygonArea = Infinity; 
+                    }
+                    
+                    if (currentPolygonArea < minContainedArea) {
+                        minContainedArea = currentPolygonArea;
+                        bestContainedPolygonName = featureName;
+                        console.log(`  [المرحلة 2 - مضلع] تم العثور على مضلع يحتوي أفضل: "${featureName}" بمساحة ${currentPolygonArea.toFixed(2)} كم مربع.`);
+                    }
+                }
+            } catch (e) {
+                console.warn(`  [المرحلة 2 - مضلع] خطأ في booleanPointInPolygon للمضلع ("${featureName}"):`, e);
+            }
+        } 
+        else if (feature.geometry.type === 'LineString' || feature.geometry.type === 'MultiLineString') {
+            try {
+                const distance = window.turf.pointToLineDistance(queryPoint, feature, { units: 'kilometers' });
+                console.log(`  [المرحلة 2 - خط] المسافة إلى LineString ("${featureName}"): ${distance.toFixed(3)} كم.`);
+
+                if (distance <= MAX_DISTANCE_TO_LINE_OR_EDGE_KM && distance < minDistanceToLineOrEdge) {
+                    minDistanceToLineOrEdge = distance; 
+                    nearestLineOrEdgeName = featureName;
+                    console.log(`  [المرحلة 2 - خط] تم العثور على خط أقرب ضمن النطاق: "${featureName}" على مسافة ${distance.toFixed(3)} كم.`);
+                }
+            } catch (e) {
+                console.warn(`  [المرحلة 2 - خط] خطأ في حساب pointToLineDistance للميزة ("${featureName}"):`, e);
+            }
+        }
+        // يمكننا إضافة هنا منطق للكشف عن قرب حواف المضلعات أيضاً إذا أردنا:
+        if (feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon') {
+            try {
+                let polygonExterior = null;
+                if (feature.geometry.type === 'Polygon' && feature.geometry.coordinates && feature.geometry.coordinates[0]) {
+                    polygonExterior = window.turf.lineString(feature.geometry.coordinates[0]);
+                } else if (feature.geometry.type === 'MultiPolygon' && feature.geometry.coordinates && feature.geometry.coordinates[0] && feature.geometry.coordinates[0][0]) {
+                    polygonExterior = window.turf.lineString(feature.geometry.coordinates[0][0]);
+                }
+                if (polygonExterior) {
+                    const distance = window.turf.pointToLineDistance(queryPoint, polygonExterior, { units: 'kilometers' });
+                    console.log(`  [المرحلة 2 - حافة مضلع] المسافة إلى حافة المضلع ("${featureName}"): ${distance.toFixed(3)} كم.`);
+                    if (distance <= MAX_DISTANCE_TO_LINE_OR_EDGE_KM && distance < minDistanceToLineOrEdge) {
+                        minDistanceToLineOrEdge = distance;
+                        nearestLineOrEdgeName = featureName;
+                        console.log(`  [المرحلة 2 - حافة مضلع] تم العثور على حافة ميزة أقرب ضمن النطاق: "${featureName}" على مسافة ${distance.toFixed(3)} كم.`);
+                    }
+                }
+            } catch (e) {
+                console.warn(`  [المرحلة 2 - حافة مضلع] خطأ في حساب المسافة لحافة المضلع ("${featureName}"):`, e);
+            }
+        }
+    }
+    
+    // اتخاذ القرار النهائي بناءً على المرحلتين
+    if (bestContainedPolygonName) {
+        finalDetectedName = bestContainedPolygonName; 
+        console.log(`[القرار النهائي] تم الكشف عن اسم من مضلع يحتوي: ${finalDetectedName}`);
+    } else if (nearestLineOrEdgeName) {
+        finalDetectedName = nearestLineOrEdgeName;
+        console.log(`[القرار النهائي] تم الكشف عن اسم من أقرب خط/حافة: ${finalDetectedName}`);
+    } else {
+        console.log("[القرار النهائي] لم يتم العثور على اسم ضمن عتبات الكشف.");
+    }
+
+    console.groupEnd();
+    return finalDetectedName;
+  }, [geojsonData, processedPointsData, spatialIndex, isTurfLoaded, isKDBushLoaded, MAX_DISTANCE_TO_POINT_KM, MAX_DISTANCE_TO_LINE_OR_EDGE_KM]); 
+
+  // دالة لتحديث عرض الموقع بناءً على مركز الخريطة
+  const updateLocationDisplay = useCallback((lat, lng) => {
+    const foundLocation = checkPointInGeoJSON(lat, lng);
+    setGeoJsonLocationName(foundLocation);
+    console.log(`جاري تعيين حالة geoJsonLocationName إلى: "${foundLocation || 'null'}"`);
+  }, [checkPointInGeoJSON]); 
+
+  // 4. دالة Debounced لتحديث عرض الموقع (تمنع الاستدعاءات المفرطة أثناء تحريك الخريطة)
+  const debouncedUpdateLocationDisplay = useCallback((lat, lng) => {
+    if (debounceTimeoutRef.current) {
+      clearTimeout(debounceTimeoutRef.current);
+    }
+    debounceTimeoutRef.current = setTimeout(() => {
+      if (updateLocationDisplayRef.current) { 
+         updateLocationDisplayRef.current(lat, lng); 
+      }
+    }, DEBOUNCE_DELAY_MS);
+  }, []); 
+
+  // تحديث الـ refs كلما تغيرت دوال رد الاتصال الفعلية (يضمن استخدام أحدث رد اتصال)
+  useEffect(() => {
+    updateLocationDisplayRef.current = updateLocationDisplay;
+    debouncedUpdateLocationDisplayRef.current = debouncedUpdateLocationDisplay;
+  }, [updateLocationDisplay, debouncedUpdateLocationDisplay]);
+
+
+  // 5. بناء الفهرس المكاني باستخدام KDBush عندما يتم تحميل processedPointsData (فهرسة النقاط المعروضة)
+  useEffect(() => {
+    // بناء الفهرس فقط إذا تم استيفاء جميع الاعتماديات ولم يتم بناء الفهرس المكاني بعد (هو null)
+    if (processedPointsData && processedPointsData.features && isKDBushLoaded && isTurfLoaded && window.turf && spatialIndex === null) {
+      console.log("جاري محاولة بناء الفهرس المكاني من النقاط المعالجة (Processed Points)...");
+      const pointsToIndex = []; 
+      const featureMap = new Map(); // لتخزين الميزة الكاملة للنقطة المعالجة
+
+      processedPointsData.features.forEach((feature, index) => {
+        if (feature.geometry && feature.geometry.type === 'Point' && 
+            Array.isArray(feature.geometry.coordinates) && feature.geometry.coordinates.length >= 2 &&
+            isFinite(feature.geometry.coordinates[0]) && isFinite(feature.geometry.coordinates[1])) {
+          pointsToIndex.push({
+            x: feature.geometry.coordinates[0], // خط الطول
+            y: feature.geometry.coordinates[1], // خط العرض
+            featureIndex: index 
+          });
+          featureMap.set(index, feature); // تخزين الميزة الكاملة للنقطة المعالجة
+        } else {
+          console.warn(`جاري تخطي الميزة (الفهرس: ${index}) من الفهرسة بسبب هندسة غير صالحة أو ليست نقطية.`);
+        }
+      });
+
+      if (pointsToIndex.length > 0) {
+        const index = new KDBush(pointsToIndex); 
+        index.finish(); 
+
+        setSpatialIndex({ index, featureMap });
+        console.log(`تم بناء الفهرس المكاني بنجاح مع ${pointsToIndex.length} نقطة (من النقاط المعالجة).`);
+      } else {
+        console.warn("لم يتم العثور على نقاط صالحة لبناء الفهرس المكاني. سيكون الفهرس المكاني null.");
+        setSpatialIndex(null); 
+      }
+    } else {
+        console.log("تم تخطي بناء الفهرس المكاني. الاعتماديات لم يتم استيفائها بالكامل بعد أو تم بناء الفهرس المكاني بالفعل:", { processedPointsData: !!processedPointsData, isKDBushLoaded, isTurfLoaded, turf: !!window.turf, spatialIndex: !!spatialIndex });
+    }
+  }, [processedPointsData, isTurfLoaded, isKDBushLoaded, spatialIndex]); 
+
+  // 6. تهيئة خريطة جوجل وإرفاق مستمعي الأحداث
+  useEffect(() => {
+    if (isMapApiLoaded && mapRef.current && !map && window.google) {
+      console.log("قيمة MapRef الحالية (لتهيئة الخريطة):", mapRef.current); 
+      console.log("جاري تهيئة كائن خريطة جوجل...");
+
+      const mapOptions = {
+        center: initialMapCenter,
+        zoom: 7, 
+        streetViewControl: false,
+        mapTypeControl: false,
+        fullscreenControl: false,
+        zoomControl: true,
+        clickableIcons: false, 
+        mapTypeId: mapType 
+      };
+
+      const googleMapInstance = new window.google.maps.Map(mapRef.current, mapOptions);
+      setMap(googleMapInstance); 
+
+      const currentMapCenter = googleMapInstance.getCenter();
+      if (currentMapCenter) {
+        const lat = currentMapCenter.lat();
+        const lng = currentMapCenter.lng();
+        setCurrentCoords({ lat, lng });
+        if (updateLocationDisplayRef.current) {
+          updateLocationDisplayRef.current(lat, lng); 
+        } else {
+          console.warn("updateLocationDisplayRef غير جاهز أثناء تحديث مركز الخريطة الأولي. جاري تأخير الفحص الأولي.");
+          setTimeout(() => updateLocationDisplayRef.current && updateLocationDisplayRef.current(lat, lng), 500);
+        }
+      }
+
+      const centerChangedListener = googleMapInstance.addListener('center_changed', () => {
+        const center = googleMapInstance.getCenter();
+        if (center) {
+          const lat = center.lat();
+          const lng = center.lng();
+          setCurrentCoords({ lat, lng });
+          if (debouncedUpdateLocationDisplayRef.current) {
+            debouncedUpdateLocationDisplayRef.current(lat, lng); 
+          } else {
+            console.warn("debouncedUpdateLocationDisplayRef غير جاهز أثناء تغيير مركز الخريطة.");
+          }
+        }
+      });
+
+      return () => {
+        if (centerChangedListener) {
+          window.google.maps.event.removeListener(centerChangedListener);
+        }
+        if (debounceTimeoutRef.current) {
+          clearTimeout(debounceTimeoutRef.current);
+        }
+        setMap(null); 
+      };
+    } else {
+        console.log("تم تخطي تهيئة الخريطة. الحالات الحالية:", { isMapApiLoaded, mapRefCurrent: !!mapRef.current, map: !!map, google: !!window.google });
+    }
+  }, [isMapApiLoaded, mapRef.current, mapType]); 
+
+  // تحديث نوع الخريطة عند تغيير حالة mapType
+  useEffect(() => {
+    if (map && window.google) {
+      map.setMapTypeId(mapType);
+    }
+  }, [map, mapType]);
+
+
+  // 7. إضافة وتنسيق البيانات المعالجة (النقاط) على الخريطة
+  useEffect(() => {
+    if (map && processedPointsData && isTurfLoaded && window.turf) { 
+      console.log("جاري إضافة وتنسيق البيانات المعالجة (النقاط) على الخريطة...");
+      map.data.forEach(feature => map.data.remove(feature)); // إزالة أي ميزات سابقة
+      map.data.addGeoJson(processedPointsData); // إضافة البيانات كنقاط
+
+      // تعريف النمط الافتراضي لميزات النقاط
+      const defaultPointStyle = {
+        icon: {
+          path: window.google.maps.SymbolPath.CIRCLE, // شكل دائرة
+          fillColor: '#0070ff', // لون أزرق
+          fillOpacity: 0.8,
+          strokeWeight: 1,
+          strokeColor: '#FFFFFF', // حدود بيضاء
+          scale: 5 // حجم النقطة
+        }
+      };
+
+      map.data.setStyle(feature => {
+        // التحقق من اسم الميزة الأصلية للمقارنة مع نتيجة البحث
+        const originalFeatureName = feature.getProperty('Name') || feature.getProperty('name');
+        const searchFeatureName = searchResultInfo?.feature?.properties?.Name || searchResultInfo?.feature?.properties?.name;
+        
+        const isHighlighted = searchResultInfo && originalFeatureName === searchFeatureName;
+
+        if (feature.getGeometry().getType() === 'Point') {
+          if (isHighlighted) {
+            return {
+              icon: {
+                path: window.google.maps.SymbolPath.CIRCLE,
+                fillColor: '#FF0000', // أحمر للمظلل
+                fillOpacity: 1.0,
+                strokeWeight: 2,
+                strokeColor: '#FFFFFF', 
+                scale: 8 // حجم أكبر للمظلل
+              }
+            };
+          }
+          return defaultPointStyle;
+        }
+        return {}; // في حالة وجود أنواع هندسية أخرى بشكل غير متوقع
+      });
+
+      // ضبط حدود الخريطة لتناسب جميع النقاط المعالجة
+      const bounds = new window.google.maps.LatLngBounds();
+      let hasValidCoordsInFeatures = false; 
+
+      processedPointsData.features.forEach(feature => {
+        if (feature.geometry && feature.geometry.type === 'Point' && feature.geometry.coordinates) {
+          const coord = feature.geometry.coordinates;
+          if (Array.isArray(coord) && coord.length >= 2 && isFinite(coord[0]) && isFinite(coord[1])) {
+            bounds.extend(new window.google.maps.LatLng(coord[1], coord[0]));
+            hasValidCoordsInFeatures = true;
+          }
+        }
+      });
+
+      if (hasValidCoordsInFeatures && !bounds.isEmpty()) {
+        map.fitBounds(bounds);
+        map.setZoom(Math.min(map.getZoom(), 15)); 
+        console.log("تم ضبط الخريطة على حدود النقاط المعالجة.");
+      } else {
+        console.warn("لم يتم العثور على إحداثيات نقاط صالحة لضبط الحدود، جاري العودة إلى مركز الخريطة الأولي.");
+        map.setCenter(initialMapCenter);
+        map.setZoom(7);
+      }
+    } else {
+        console.log("تم تخطي إضافة بيانات الخريطة/التنسيق. الاعتماديات لم يتم استيفائها بالكامل:", { map: !!map, processedPointsData: !!processedPointsData, isTurfLoaded, turf: !!window.turf });
+    }
+  }, [map, processedPointsData, isTurfLoaded, searchResultInfo]); 
+
+  // دالة لنسخ الإحداثيات الحالية واسم الموقع إلى الحافظة
+  const copyCoordinates = useCallback(() => {
+    const locationName = geoJsonLocationName || 'موقع غير معروف';
+    const coordText = `خط عرض = ${currentCoords.lat.toFixed(8)} خط طول = ${currentCoords.lng.toFixed(8)}\nالموقع: ${locationName}`;
+    const el = document.createElement('textarea');
+    el.value = coordText;
+    document.body.appendChild(el); 
+    el.select();
+    document.execCommand('copy'); 
+    document.body.removeChild(el); 
+    console.log("تم نسخ الإحداثيات واسم الموقع!");
+  }, [currentCoords, geoJsonLocationName]);
+
+  // دالة لإعادة تعيين الخريطة إلى مركزها الأولي ومستوى التكبير
+  const resetToCenter = useCallback(() => {
+    if (map) {
+      map.setCenter(initialMapCenter); 
+      map.setZoom(7); 
+      setCurrentCoords(initialMapCenter); 
+      updateLocationDisplayRef.current(initialMapCenter.lat, initialMapCenter.lng);
+
       setSearchResultInfo(null);
+      if (map.data) {
+        map.data.revertStyle(); 
+      }
+    }
+  }, [map]); 
+
+  // عنصر نائب لوظيفة تصدير الخريطة
+  const exportMap = useCallback(() => {
+    console.log('عنصر نائب لوظيفة تصدير الخريطة');
+  }, [geojsonData]);
+
+  // التعامل مع تبديل نوع الخريطة (Roadmap <-> Satellite)
+  const handleMapTypeToggle = useCallback(() => {
+    setMapType(prevType => {
+      const newType = prevType === 'roadmap' ? 'satellite' : 'roadmap';
+      console.log(`جاري تبديل نوع الخريطة إلى: ${newType}`);
+      return newType;
+    });
+  }, []);
+
+  // التعامل مع وظيفة البحث
+  const handleSearch = useCallback(() => {
+    if (!geojsonData || !searchedPlaceInput.trim()) {
+      setSearchResultInfo(null);
+      if (map.data) {
+        map.data.revertStyle(); 
+      }
       return;
     }
 
     const searchTerm = searchedPlaceInput.trim().toLowerCase();
+    let foundOriginalFeature = null;
 
-    // Find a feature whose name (or other properties) includes the search term
-    const foundFeature = geojson.features.find(feature => {
-      if (!feature.properties) return false;
+    // البحث في البيانات الأصلية للعثور على الميزة الأصلية بالاسم
+    for (const feature of geojsonData.features) {
+      const featureName = feature.properties?.Name || feature.properties?.name || '';
+      if (featureName.toLowerCase().includes(searchTerm)) {
+        foundOriginalFeature = feature;
+        break; 
+      }
+    }
 
-      const name = feature.properties.name || feature.properties.NAME || feature.properties.title || '';
-      return name.toLowerCase().includes(searchTerm);
-    });
+    if (foundOriginalFeature && map) {
+      if (map.data) {
+        map.data.revertStyle(); 
+      }
 
-    if (foundFeature) {
-      setHighlightedFeature(foundFeature); // Highlight the found feature
+      setSearchResultInfo({
+          name: foundOriginalFeature.properties?.Name || foundOriginalFeature.properties?.name,
+          feature: foundOriginalFeature 
+      });
 
-      const map = mapRef.current;
-      if (map && foundFeature.geometry.coordinates.length > 0) {
-        // Get the first coordinate of the feature (GeoJSON is [lng, lat])
-        const startCoord = foundFeature.geometry.coordinates[0].slice().reverse(); // [lat, lng]
+      // الانتقال إلى Centroid الميزة الأصلية
+      if (foundOriginalFeature.geometry.coordinates && foundOriginalFeature.geometry.coordinates.length > 0) {
+          let coordsToPanTo = null;
+          if (window.turf) {
+              try {
+                  const centroid = window.turf.centroid(foundOriginalFeature);
+                  if (centroid && centroid.geometry && centroid.geometry.coordinates && 
+                      Array.isArray(centroid.geometry.coordinates) && centroid.geometry.coordinates.length >= 2 &&
+                      isFinite(centroid.geometry.coordinates[0]) && isFinite(centroid.geometry.coordinates[1])) {
+                       coordsToPanTo = { lng: centroid.geometry.coordinates[0], lat: centroid.geometry.coordinates[1] };
+                  }
+              } catch (e) {
+                  console.warn("تعذر حساب Centroid للتنقل. جاري العودة إلى الإحداثيات الأولى أو نقطة البداية للميزة.", e);
+              }
+          }
+          
+          if (!coordsToPanTo) { // Fallback إذا فشل Centroid
+            if (foundOriginalFeature.geometry.type === 'Point' && Array.isArray(foundOriginalFeature.geometry.coordinates) && foundOriginalFeature.geometry.coordinates.length >= 2) {
+                coordsToPanTo = { lng: foundOriginalFeature.geometry.coordinates[0], lat: foundOriginalFeature.geometry.coordinates[1] };
+            } else if ((foundOriginalFeature.geometry.type === 'LineString' || foundOriginalFeature.geometry.type === 'MultiLineString') && Array.isArray(foundOriginalFeature.geometry.coordinates[0]) && foundOriginalFeature.geometry.coordinates[0].length >= 2) {
+                coordsToPanTo = { lng: foundOriginalFeature.geometry.coordinates[0][0], lat: foundOriginalFeature.geometry.coordinates[0][1] };
+            } else if ((foundOriginalFeature.geometry.type === 'Polygon' || foundOriginalFeature.geometry.type === 'MultiPolygon') && Array.isArray(foundOriginalFeature.geometry.coordinates[0]) && Array.isArray(foundOriginalFeature.geometry.coordinates[0][0]) && foundOriginalFeature.geometry.coordinates[0][0].length >= 2) {
+                coordsToPanTo = { lng: foundOriginalFeature.geometry.coordinates[0][0][0], lat: foundOriginalFeature.geometry.coordinates[0][0][1] };
+            }
+          }
 
-        map.setView(startCoord, 14); // Pan and zoom to the found feature
-
-        // Set search result information
-        const featureName = foundFeature.properties.name || foundFeature.properties.NAME || foundFeature.properties.title || 'غير معروف';
-        setSearchResultInfo({
-          name: featureName,
-          coordinates: `${startCoord[0].toFixed(8)}, ${startCoord[1].toFixed(8)}`,
-          feature: foundFeature
-        });
-
-        // Update main location info to show the found place
-        setLocationInfo({
-          name: `${featureName} (تم العثور عليه)`,
-          coordinates: `${startCoord[0].toFixed(8)}, ${startCoord[1].toFixed(8)}`,
-          isFromGeoJSON: true
-        });
-
-        setSearchedPlaceInput(''); // Clear search input after successful search
-        setShowSearchInput(false); // Close search input after successful search
+          if (coordsToPanTo && isFinite(coordsToPanTo.lat) && isFinite(coordsToPanTo.lng)) {
+              map.panTo(new window.google.maps.LatLng(coordsToPanTo.lat, coordsToPanTo.lng));
+              map.setZoom(14); 
+          } else {
+            console.warn("إحداثيات الانتقال غير صالحة بعد جميع المحاولات لـ feature:", foundOriginalFeature);
+          }
       }
     } else {
-      setHighlightedFeature(null);
       setSearchResultInfo(null);
-      // Use a custom message box instead of alert in production
-      alert(`لم يتم العثور على "${searchedPlaceInput}"!`);
+      console.log(`لم يتم العثور على موقع لـ "${searchedPlaceInput}"`);
     }
-  }, [geojson, searchedPlaceInput]);
+    setSearchedPlaceInput(''); 
+    setShowSearchInput(false); 
+  }, [geojsonData, searchedPlaceInput, map]);
 
-  // Handle Enter key press in search input to trigger search
   const handleSearchKeyPress = useCallback((e) => {
     if (e.key === 'Enter') {
       handleSearch();
     }
   }, [handleSearch]);
 
-  // Show loading message while GeoJSON data is being fetched
-  if (loading) return <div className="text-center mt-4 text-lg font-semibold text-gray-700">جاري تحميل البيانات...</div>;
+  const handleShowAboutModal = useCallback(() => {
+    setShowAboutModal(true);
+  }, []);
 
-  // Create the custom icon for the user's location marker with current rotation
-  const currentUserLocationIcon = createUserLocationIcon(rotationAngle);
-
-  // Calculate coordinates for the highlighted feature (for marker and distance)
-  const highlightedCoords = highlightedFeature && highlightedFeature.geometry.coordinates.length > 0
-    ? highlightedFeature.geometry.coordinates[0].slice().reverse() // [lat, lng]
-    : null;
-
-  // Calculate distance between user and highlighted feature
-  const distanceToHighlighted = (userLocation && highlightedCoords)
-    ? calculateDistance(userLocation, highlightedCoords).toFixed(2)
-    : 'N/A';
+  const handleCloseAboutModal = useCallback(() => {
+    setShowAboutModal(false);
+  }, []);
 
   return (
-    <div className="w-full h-screen relative flex flex-col">
-      {/* Top Controls Panel (Icons) */}
-      <div className="absolute top-4 right-4 z-[1000] p-2 bg-white rounded-md shadow-lg flex flex-col space-y-2 md:flex-row md:space-x-2 md:space-y-0">
-        {/* Map Type Toggle */}
-        <button
-          onClick={handleMapTypeChange}
-          className="p-2 bg-blue-600 text-white rounded-full shadow-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 transition duration-200"
-          title={mapType === 'roadmap' ? 'عرض القمر الصناعي' : 'عرض الخريطة'}
-        >
-          {mapType === 'roadmap' ? (
-            // Satellite Icon
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M6.105 8.655A.5.5 0 0 1 6 8.5v-1A.5.5 0 0 1 6.105 7c.451-.9 1.402-1.336 2.527-1.336h.619c.773 0 1.442.305 1.867.8l.016.01c.21.21.36.463.454.747L12 12m2.848-2.849a.5.5 0 0 1 .152.349V15m-1.243-3.083 3.693 3.693M11 5.5h-.619c-1.125 0-2.076.436-2.527 1.336-.057.114-.083.24-.075.367a.5.5 0 0 1 .105.348v1A.5.5 0 0 1 8.895 9c-.451.9-1.402 1.336-2.527 1.336H5m-2.257-3.95L5 9.475m10.125-3.694c.3-.294.597-.563.896-.807.45-.365.88-.696 1.285-.99.405-.293.774-.534 1.1-.72A2.247 2.247 0 0 1 20.25 5c.83 0 1.5.671 1.5 1.5 0 .82-.67 1.491-1.488 1.5-.07-.006-.136-.017-.202-.031a.5.5 0 0 0-.5.495v.373a.5.5 0 0 0 .15.349l3.69 3.69M20.25 15V9.75M17.25 17.25H6.75A2.25 2.25 0 0 0 4.5 19.5v1.25c0 .138.112.25.25.25H19.5c.138 0 .25-.112.25-.25V19.5a2.25 2.25 0 0 0-2.25-2.25Z" /></svg>
-          ) : (
-            // Map (Roadmap) Icon
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M9 6.75V15m6-6v8.25m.5 1.5H9.75M21 12c0 1.268-.63 2.473-1.688 3.122A11.53 11.53 0 0 1 12 18.75c-2.514 0-4.834-.694-6.705-1.873A11.53 11.53 0 0 1 3 12c0-1.268.63-2.473 1.688-3.122A11.53 11.53 0 0 1 12 5.25c2.514 0 4.834.694 6.705 1.873A11.53 11.53 0 0 1 21 12Z" /></svg>
+    <div className="relative w-full h-full min-h-[600px] overflow-hidden font-sans bg-gray-100">
+      {isMapApiLoaded && isTurfLoaded && isKDBushLoaded ? ( 
+        <>
+          <div 
+            ref={mapRef}
+            id="map-container"
+            style={{ width: '100%', height: '100%' }} 
+            className="absolute inset-0 rounded-lg shadow-xl"
+          ></div>
+
+          {/* Fixed Cursor Icon in the center of the screen */}
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 flex items-center justify-center pointer-events-none">
+            <svg
+                width="40"
+                height="40"
+                viewBox="0 0 24 24"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                className="drop-shadow-lg"
+            >
+                <path
+                    d="M12 2L2 22h20L12 2z"
+                    fill="red"
+                    stroke="white"
+                    strokeWidth="1.5"
+                />
+                <circle cx="12" cy="5" r="2.5" fill="red" stroke="white" strokeWidth="1"/>
+            </svg>
+          </div>
+
+          <div className="absolute bottom-4 left-4 bg-black bg-opacity-80 text-white px-4 py-2 rounded-lg text-sm font-mono z-20 shadow-md">
+            خط عرض = {currentCoords.lat.toFixed(8)} خط طول = {currentCoords.lng.toFixed(8)}
+          </div>
+
+          <div className="absolute bottom-16 left-4 bg-red-600 text-white px-3 py-1 rounded-lg text-sm flex items-center gap-2 z-20 shadow-md">
+            <MapPin size={16} />
+            {geoJsonLocationName 
+              ? geoJsonLocationName
+              : 'موقع غير معروف'
+            }
+          </div>
+
+          {searchResultInfo && (
+            <div className="absolute top-4 left-4 bg-white p-3 rounded-lg shadow-lg z-20 max-w-xs md:max-w-sm">
+                <div className="flex justify-between items-center mb-2">
+                    <h3 className="font-bold text-lg text-blue-700">نتيجة البحث</h3>
+                    <button onClick={() => {
+                      setSearchResultInfo(null);
+                      if (map.data) {
+                        map.data.revertStyle(); 
+                      }
+                    }} className="text-gray-500 hover:text-gray-700">
+                        <X size={20} /> 
+                    </button>
+                </div>
+                <p className="text-sm font-semibold text-gray-700">الاسم: <span className="text-blue-600">{searchResultInfo.name}</span></p>
+            </div>
           )}
-        </button>
 
-        {/* Go to Home (User Location) */}
-        <button
-          onClick={handleGoHome}
-          className="p-2 bg-green-600 text-white rounded-full shadow-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-50 transition duration-200"
-          title="العودة للمنزل"
-        >
-          {/* Home icon */}
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="m2.25 12 8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125h9.75a1.125 1.125 0 0 0 1.125-1.125V9.75M8.25 21.75h7.5" /></svg>
-        </button>
 
-        {/* Search Toggle Button */}
-        <button
-          onClick={() => setShowSearchInput(prev => !prev)}
-          className="p-2 bg-indigo-600 text-white rounded-full shadow-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-50 transition duration-200"
-          title="بحث"
-        >
-          {/* Search icon */}
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" /></svg>
-        </button>
-      </div>
-
-      {/* Search Input Overlay */}
-      {showSearchInput && (
-        <div className="absolute top-4 left-4 right-4 z-[1000] p-2 bg-white rounded-md shadow-lg flex items-center space-x-2">
-          <input
-            type="text"
-            placeholder="البحث عن مكان..."
-            value={searchedPlaceInput}
-            onChange={(e) => setSearchedPlaceInput(e.target.value)}
-            onKeyPress={handleSearchKeyPress}
-            className="flex-grow p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-          <button
-            onClick={handleSearch}
-            className="p-2 bg-indigo-600 text-white rounded-full shadow-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-50 transition duration-200"
-            title="بحث"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" /></svg>
-          </button>
-          <button
-            onClick={() => setShowSearchInput(false)}
-            className="p-2 bg-gray-600 text-white rounded-full shadow-md hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-opacity-50 transition duration-200"
-            title="إغلاق البحث"
-          >
-            {/* Close icon */}
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
-          </button>
-        </div>
-      )}
-
-      {/* Search Result Info Panel (Responsive) */}
-      {searchResultInfo && (
-        <div className="absolute top-20 md:top-4 md:left-4 z-[1000] p-3 bg-white rounded-md shadow-lg w-[calc(100%-2rem)] md:max-w-sm">
-          <div className="flex items-center justify-between mb-1">
-            <h3 className="text-base md:text-lg font-bold text-green-600">تم العثور على المكان</h3>
-            <button
-              onClick={() => setSearchResultInfo(null)}
-              className="text-gray-500 hover:text-gray-700 p-1 rounded-full hover:bg-gray-100"
-              title="إغلاق"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
-            </button>
-          </div>
-          <div className="space-y-1 text-sm md:text-base">
-            <div>
-              <span className="font-semibold text-gray-700">الاسم: </span>
-              <span className="text-red-600 font-bold">{searchResultInfo.name}</span>
-            </div>
-            <div>
-              <span className="font-semibold text-gray-700">الإحداثيات: </span>
-              <span className="font-mono text-xs md:text-sm">{searchResultInfo.coordinates}</span>
-            </div>
-            {userLocation && (
-              <div>
-                <span className="font-semibold text-gray-700">المسافة من موقعك: </span>
-                <span className="text-blue-600 font-bold">{distanceToHighlighted} كم</span>
+          <div className="absolute top-4 right-4 flex flex-col gap-2 z-20">
+            {showSearchInput && (
+              <div className="flex gap-2 p-2 bg-white rounded-md shadow-lg">
+                <input
+                  type="text"
+                  placeholder="ابحث عن اسم GeoJSON..."
+                  value={searchedPlaceInput}
+                  onChange={(e) => setSearchedPlaceInput(e.target.value)}
+                  onKeyPress={handleSearchKeyPress}
+                  className="p-2 border rounded-md focus:ring-2 focus:ring-blue-500 flex-grow"
+                />
+                <button
+                  onClick={handleSearch}
+                  className="bg-blue-600 hover:bg-blue-700 text-white p-3 rounded-full shadow-lg transition-colors duration-200 ease-in-out"
+                  title="إجراء البحث"
+                >
+                  <Search size={20} />
+                </button>
+                <button
+                  onClick={() => {
+                    setShowSearchInput(false);
+                    setSearchedPlaceInput('');
+                    setSearchResultInfo(null);
+                     if (map.data) {
+                        map.data.revertStyle(); 
+                      }
+                  }}
+                  className="bg-gray-500 hover:bg-gray-600 text-white p-3 rounded-full shadow-lg transition-colors duration-200 ease-in-out"
+                  title="إغلاق البحث"
+                >
+                  <X size={20} /> 
+                </button>
               </div>
             )}
-            <div className="flex space-x-2 mt-2">
+            <div className="flex gap-2">
               <button
-                onClick={() => {
-                  const coordsString = searchResultInfo.coordinates;
-                  const textarea = document.createElement('textarea');
-                  textarea.value = coordsString;
-                  document.body.appendChild(textarea);
-                  textarea.select();
-                  document.execCommand('copy');
-                  document.body.removeChild(textarea);
-                  alert('تم نسخ إحداثيات المكان!');
-                }}
-                className="p-2 bg-blue-600 text-white rounded-full shadow-md hover:bg-blue-700 transition duration-200"
-                title="نسخ الإحداثيات"
+                onClick={resetToCenter}
+                className="bg-green-600 hover:bg-green-700 text-white p-3 rounded-full shadow-lg transition-colors duration-200 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-75"
+                title="إعادة تعيين إلى المركز"
               >
-                {/* Copy Icon */}
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75m10.875 0V6.75a1.125 1.125 0 0 0-1.125-1.125H9.75A1.125 1.125 0 0 0 8.625 6.75v.375m.375 0H18A2.25 2.25 0 0 1 20.25 9v10.5A2.25 2.25 0 0 1 18 21.75H9.75A2.25 2.25 0 0 1 7.5 19.5V9a2.25 2.25 0 0 1 2.25-2.25Z" /></svg>
+                <Home size={20} />
               </button>
-            </div>
+
+              <button
+                onClick={handleShowAboutModal}
+                className="bg-purple-600 hover:bg-purple-700 text-white p-3 rounded-full shadow-lg transition-colors duration-200 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-opacity-75"
+                title="حول/مساعدة"
+              >
+                <Info size={20} />
+              </button>
+
+              <button
+                onClick={() => setShowSearchInput(prev => !prev)}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white p-3 rounded-full shadow-lg transition-colors duration-200 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-75"
+                title="تبديل البحث"
+              >
+                <Search size={20} />
+              </button>
+
+              <button
+                onClick={handleMapTypeToggle}
+                className="bg-orange-600 hover:bg-orange-700 text-white p-3 rounded-full shadow-lg transition-colors duration-200 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-opacity-75"
+                title={mapType === 'roadmap' ? 'عرض القمر الصناعي' : 'عرض خريطة الطريق'}
+              >
+                {mapType === 'roadmap' ? <Satellite size={20} /> : <MapIcon size={20} />}
+              </button>
+            </div> 
+          </div> 
+
+          <div className="absolute bottom-4 right-4 flex gap-2 z-20">
+            <button
+              onClick={copyCoordinates}
+              className="bg-blue-600 hover:bg-blue-700 text-white p-3 rounded-full shadow-lg transition-colors duration-200 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-75"
+              title="نسخ الإحداثيات واسم الموقع"
+            >
+              <Copy size={20} />
+            </button>
+            
+            <button
+              onClick={exportMap}
+              className="bg-red-600 hover:bg-red-700 text-white p-3 rounded-full shadow-lg transition-colors duration-200 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-75"
+              title="تنزيل بيانات الخريطة"
+            >
+              <Download size={20} />
+            </button>
           </div>
+
+          {showAboutModal && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+              <div className="bg-white p-8 rounded-lg shadow-xl max-w-sm w-full relative">
+                <button
+                  onClick={handleCloseAboutModal}
+                  className="absolute top-3 right-3 text-gray-500 hover:text-gray-700"
+                >
+                  <X size={24} />
+                </button>
+                <h2 className="text-xl font-bold mb-4 text-blue-700">حول هذه الخريطة</h2>
+                <p className="text-gray-700 mb-4">
+                  تعرض هذه الخريطة التفاعلية ميزات جغرافية. يمكنك التنقل، والتكبير/التصغير، والبحث عن الميزات بالاسم،
+                  والتبديل بين عرض خريطة الطريق وعرض القمر الصناعي، ونسخ الإحداثيات الحالية.
+                </p>
+                <p className="text-gray-700 text-sm">
+                  تم تطويرها باستخدام React، وواجهة برمجة تطبيقات خرائط جوجل، وTurf.js.
+                </p>
+                <button
+                  onClick={handleCloseAboutModal}
+                  className="mt-6 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md shadow transition-colors"
+                >
+                  فهمت!
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="flex items-center justify-center h-full min-h-[500px]">
+          <div className="text-lg text-gray-700">جاري تحميل الخريطة...</div>
         </div>
       )}
-
-
-      {/* Crosshair at the center of the map */}
-      <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-[1000] pointer-events-none">
-        <div className="relative">
-          {/* Main crosshair circle */}
-          <div className="w-8 h-8 border-2 border-red-500 rounded-full bg-white bg-opacity-80 flex items-center justify-center">
-            <div className="w-2 h-2 bg-red-500 rounded-full"></div>
-          </div>
-          {/* Crosshair lines */}
-          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2">
-            <div className="w-12 h-0.5 bg-red-500 absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2"></div>
-            <div className="w-0.5 h-12 bg-red-500 absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2"></div>
-          </div>
-        </div>
-      </div>
-
-      {/* Main Map Container */}
-      <MapContainer
-        center={defaultCenter}
-        zoom={8} // Initial zoom level
-        scrollWheelZoom={true} // Enable mouse wheel zooming
-        className="flex-grow w-full h-full" // Occupy full available space
-        whenCreated={mapInstance => mapRef.current = mapInstance} // Get reference to Leaflet map instance
-      >
-        {/* Conditional TileLayer based on mapType state */}
-        {mapType === 'roadmap' ? (
-          <TileLayer
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            attribution="&copy; OpenStreetMap contributors"
-          />
-        ) : (
-          <TileLayer
-            url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-            attribution="Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community"
-          />
-        )}
-
-        {/* Map center tracking component */}
-        <MapCenterTracker
-          setCenterCoordinates={setCenterCoordinates}
-          setLocationInfo={setLocationInfo}
-          geojson={geojson}
-        />
-
-        {/* GeoJSON layer component, only rendered when data is available */}
-        {geojson && <GeoJSONLayerComponent data={geojson} onPolylineClick={handlePolylineClick} highlightedFeature={highlightedFeature} />}
-
-        {/* User location tracking component */}
-        <LocationTracker setUserLocation={setUserLocation} setRotationAngle={setRotationAngle} />
-
-        {/* User's current location marker */}
-        {userLocation && (
-          <Marker position={userLocation} icon={currentUserLocationIcon}>
-            <Popup>
-              <div>
-                <strong>موقعك الحالي:</strong><br />
-                {userLocation[0].toFixed(5)}, {userLocation[1].toFixed(5)}
-              </div>
-            </Popup>
-          </Marker>
-        )}
-
-        {/* Marker for the highlighted/searched feature */}
-        {highlightedFeature && highlightedCoords && (
-          <Marker position={highlightedCoords}>
-            <Popup>
-              <div>
-                <strong>المكان المحدد:</strong> {highlightedFeature.properties.name || 'غير معروف'}<br />
-                <strong>الإحداثيات (البداية):</strong><br />
-                {highlightedCoords[0].toFixed(5)}, {highlightedCoords[1].toFixed(5)}<br />
-                <strong>المسافة من موقعك:</strong> {distanceToHighlighted} كم
-              </div>
-            </Popup>
-          </Marker>
-        )}
-
-        {/* Polyline connecting user location to highlighted feature */}
-        {userLocation && highlightedCoords && (
-          <Polyline positions={[userLocation, highlightedCoords]} color="purple" weight={2} opacity={0.7} dashArray="5, 10" />
-        )}
-      </MapContainer>
-
-      {/* Bottom Coordinates and Info Panel */}
-      <div className="absolute bottom-0 left-0 right-0 z-[1000] bg-black bg-opacity-90 text-white p-3 md:p-4">
-        <div className="flex flex-col md:flex-row justify-between items-center space-y-2 md:space-y-0">
-          {/* Coordinates Display */}
-          <div className="flex flex-col md:flex-row space-y-1 md:space-y-0 md:space-x-4 text-xs md:text-lg">
-            <div className="font-mono">
-              <span className="text-gray-300">Latitude = </span>
-              <span className="text-white font-bold">{centerCoordinates[0].toFixed(8)}</span>
-            </div>
-            <div className="font-mono">
-              <span className="text-gray-300">Longitude = </span>
-              <span className="text-white font-bold">{centerCoordinates[1].toFixed(8)}</span>
-            </div>
-          </div>
-
-          {/* Action Buttons (Icons) */}
-          <div className="flex space-x-2">
-            <button
-              onClick={handleCopyCoordinates}
-              className="p-2 bg-blue-600 text-white rounded-full shadow-md hover:bg-blue-700 transition duration-200"
-              title="نسخ الإحداثيات"
-            >
-              {/* Copy Icon */}
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75m10.875 0V6.75a1.125 1.125 0 0 0-1.125-1.125H9.75A1.125 1.125 0 0 0 8.625 6.75v.375m.375 0H18A2.25 2.25 0 0 1 20.25 9v10.5A2.25 2.25 0 0 1 18 21.75H9.75A2.25 2.25 0 0 1 7.5 19.5V9a2.25 2.25 0 0 1 2.25-2.25Z" /></svg>
-            </button>
-            <button
-              className="p-2 bg-red-600 text-white rounded-full shadow-md hover:bg-red-700 transition duration-200"
-              title="آلة حاسبة"
-            >
-              {/* Calculator Icon */}
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25m-10.5 0h10.5M19.5 6.75V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.75M13.5 10.5h.008v.008h-.008V10.5Zm-4.5 0h.008v.008H9V10.5Zm-4.5 0h.008v.008H4.5V10.5Zm9 3h.008v.008h-.008V13.5Zm-4.5 0h.008v.008H9V13.5Zm-4.5 0h.008v.008H4.5V13.5Zm9 3h.008v.008h-.008V16.5Zm-4.5 0h.008v.008H9V16.5Zm-4.5 0h.008v.008H4.5V16.5Z" /></svg>
-            </button>
-          </div>
-        </div>
-
-        {/* Location Name Display */}
-        {locationInfo && (
-          <div className="mt-2 flex items-center space-x-2">
-            <div className="text-sm md:text-base text-gray-300 truncate flex-1">
-              📍 {locationInfo.name}
-            </div>
-            {locationInfo.isFromGeoJSON && (
-              <div className="bg-green-600 text-white px-2 py-1 rounded text-xs font-semibold">
-                محلي
-              </div>
-            )}
-          </div>
-        )}
-      </div>
     </div>
   );
-}
+};
+
+export default React.memo(MapComponent);
