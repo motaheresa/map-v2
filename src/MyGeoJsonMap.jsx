@@ -17,11 +17,23 @@ function MyMap() {
     libraries: ['geometry'],
   });
 
-  const infoWindowRef = useRef(null);
   const mapRef = useRef(null);
+  const infoWindowRef = useRef(null);
   const [currentCoords, setCurrentCoords] = useState({ lat: 0, lng: 0 });
   const [lineName, setLineName] = useState(null);
   const [features, setFeatures] = useState([]);
+  const [safeAreaBottom, setSafeAreaBottom] = useState('20px');
+
+  useEffect(() => {
+    const calculateSafeArea = () => {
+      const isMobile = window.innerWidth <= 768;
+      setSafeAreaBottom(isMobile ? '60px' : '20px');
+    };
+
+    calculateSafeArea();
+    window.addEventListener('resize', calculateSafeArea);
+    return () => window.removeEventListener('resize', calculateSafeArea);
+  }, []);
 
   const handleMapLoad = (map) => {
     mapRef.current = map;
@@ -37,7 +49,9 @@ function MyMap() {
       },
       disableDoubleClickZoom: true,
       keyboardShortcuts: false,
-      pinchZoom: false
+      pinchZoom: false,
+      fullscreenControl: false,
+      streetViewControl: false
     });
 
     fetch('/data.json')
@@ -95,13 +109,18 @@ function MyMap() {
       if (!found) {
         setLineName(null);
       }
-    }, 1000);
+    }, 500); // تحديث كل 500ms لأداء أفضل
 
     return () => clearInterval(intervalId);
   }, [features]);
 
   return isLoaded ? (
-    <div style={{ position: 'relative', touchAction: 'pan-x pan-y' }}>
+    <div style={{ 
+      position: 'relative',
+      height: '100vh',
+      width: '100%',
+      paddingBottom: 'env(safe-area-inset-bottom)'
+    }}>
       <GoogleMap
         mapContainerStyle={containerStyle}
         center={center}
@@ -109,60 +128,75 @@ function MyMap() {
         onLoad={handleMapLoad}
         options={{
           gestureHandling: 'greedy',
-          gestureHandlingOptions: {
-            scrollable: true,
-            zoomOnDblClick: false
-          },
           disableDoubleClickZoom: true,
           keyboardShortcuts: false,
-          pinchZoom: false
+          fullscreenControl: false,
+          streetViewControl: false,
+          zoomControlOptions: {
+            position: window.google.maps.ControlPosition.LEFT_BOTTOM
+          }
         }}
       />
-      <CursorDot />
 
+      {/* النقطة الحمراء في المركز */}
+      <div
+        style={{
+          position: 'absolute',
+          top: '50%',
+          left: '50%',
+          width: '12px',
+          height: '12px',
+          backgroundColor: 'red',
+          borderRadius: '50%',
+          transform: 'translate(-50%, -50%)',
+          zIndex: 9999,
+          pointerEvents: 'none',
+        }}
+      />
+
+      {/* مربع عرض المعلومات */}
       <div style={{
-        position: 'absolute',
-        bottom: 10,
+        position: 'fixed',
+        bottom: safeAreaBottom,
         left: '50%',
         transform: 'translateX(-50%)',
-        backgroundColor: 'rgba(255, 255, 255, 0.9)',
-        padding: '8px 16px',
-        borderRadius: '12px',
+        backgroundColor: 'rgba(255, 255, 255, 0.95)',
+        padding: '12px 20px',
+        borderRadius: '16px',
         fontFamily: 'sans-serif',
         fontSize: '14px',
-        boxShadow: '0 2px 6px rgba(0,0,0,0.2)',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
         direction: 'rtl',
         zIndex: 10000,
-        touchAction: 'none'
+        maxWidth: '90%',
+        textAlign: 'center',
+        border: '1px solid #eee',
+        backdropFilter: 'blur(5px)'
       }}>
-        📍 الإحداثيات: {currentCoords.lat.toFixed(6)}, {currentCoords.lng.toFixed(6)} <br />
-        {lineName && <>📌 الاسم: {lineName}</>}
+        <div style={{ marginBottom: '4px' }}>
+          📍 <strong>الإحداثيات:</strong> {currentCoords.lat.toFixed(6)}, {currentCoords.lng.toFixed(6)}
+        </div>
+        {lineName && (
+          <div style={{ marginTop: '4px' }}>
+            📌 <strong>الاسم:</strong> {lineName}
+          </div>
+        )}
       </div>
     </div>
   ) : (
-    <div>جارٍ تحميل الخريطة...</div>
+    <div style={{
+      display: 'flex',
+      justifyContent: 'center',
+      alignItems: 'center',
+      height: '100vh',
+      fontSize: '18px'
+    }}>
+      جارٍ تحميل الخريطة...
+    </div>
   );
 }
 
-function CursorDot() {
-  return (
-    <div
-      style={{
-        position: 'absolute',
-        top: '50%',
-        left: '50%',
-        width: '12px',
-        height: '12px',
-        backgroundColor: 'red',
-        borderRadius: '50%',
-        transform: 'translate(-50%, -50%)',
-        zIndex: 9999,
-        pointerEvents: 'none',
-      }}
-    />
-  );
-}
-
+// دالة مساعدة لحساب أقرب نقطة على قطعة خط
 function closestPointOnSegment(p, a, b, google) {
   const dx = b.lng() - a.lng();
   const dy = b.lat() - a.lat();
