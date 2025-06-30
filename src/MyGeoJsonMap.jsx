@@ -27,7 +27,7 @@ function MyMap() {
     const google = window.google;
     infoWindowRef.current = new google.maps.InfoWindow();
 
-    fetch('/data.json') // تأكد من المسار
+    fetch('/data.json') // تأكد من المسار الصحيح
       .then((res) => res.json())
       .then((data) => {
         map.data.addGeoJson(data);
@@ -37,9 +37,10 @@ function MyMap() {
           strokeColor: 'blue',
           strokeWeight: 4,
           strokeOpacity: 1,
+          zIndex: 1,
         });
 
-        const features= [];
+        const features = [];
         map.data.forEach((feature) => features.push(feature));
 
         setInterval(() => {
@@ -47,7 +48,6 @@ function MyMap() {
           if (!center) return;
 
           const currentPoint = new google.maps.LatLng(center.lat(), center.lng());
-
           setCurrentCoords({ lat: center.lat(), lng: center.lng() });
 
           let found = false;
@@ -74,13 +74,14 @@ function MyMap() {
                       map.data.overrideStyle(highlightedFeatureRef.current, {
                         strokeColor: 'blue',
                         strokeWeight: 4,
+                        zIndex: 1,
                       });
                     }
 
                     map.data.overrideStyle(feature, {
                       strokeColor: 'red',
                       strokeWeight: 5,
-                       zIndex: 1000,
+                      zIndex: 1000, // يخلي الأحمر فوق أي خط تاني
                     });
 
                     highlightedFeatureRef.current = feature;
@@ -95,11 +96,11 @@ function MyMap() {
 
           if (!found) {
             setLineName(null);
-
             if (highlightedFeatureRef.current) {
               map.data.overrideStyle(highlightedFeatureRef.current, {
                 strokeColor: 'blue',
                 strokeWeight: 4,
+                zIndex: 1,
               });
               highlightedFeatureRef.current = null;
             }
@@ -115,23 +116,30 @@ function MyMap() {
         center={center}
         zoom={15}
         onLoad={handleMapLoad}
+        options={{
+          gestureHandling: 'greedy', // ✅ يسمح بالحركة بصباع واحد
+          fullscreenControl: false,
+          mapTypeControl: false,
+          streetViewControl: false,
+        }}
       />
       <CursorDot />
       <div
         style={{
           position: 'absolute',
-          bottom: 10,
+          bottom: 'max(10px, env(safe-area-inset-bottom))',
           left: '50%',
           transform: 'translateX(-50%)',
           backgroundColor: 'rgba(255, 255, 255, 0.95)',
           padding: '8px 16px',
           borderRadius: '12px',
           fontFamily: 'sans-serif',
-          fontSize: '14px',
+          fontSize: window.innerWidth < 400 ? '12px' : '14px',
           boxShadow: '0 2px 6px rgba(0,0,0,0.2)',
           direction: 'rtl',
           zIndex: 10000,
-          minWidth: '300px',
+          minWidth: '280px',
+          maxWidth: '95%',
           textAlign: 'center',
         }}
       >
@@ -163,12 +171,7 @@ function CursorDot() {
   );
 }
 
-function closestPointOnSegment(
-  p,
-  a,
-  b,
-  google
-) {
+function closestPointOnSegment(p, a, b, google) {
   const dx = b.lng() - a.lng();
   const dy = b.lat() - a.lat();
   const lengthSquared = dx * dx + dy * dy;
