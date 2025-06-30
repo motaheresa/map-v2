@@ -127,7 +127,7 @@ function MyMap() {
       <div
         style={{
           position: 'absolute',
-          bottom: 'max(10px, env(safe-area-inset-bottom))',
+          bottom: '0',
           left: '50%',
           transform: 'translateX(-50%)',
           backgroundColor: 'rgba(255, 255, 255, 0.95)',
