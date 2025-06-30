@@ -126,7 +126,7 @@ function MyMap() {
       <CursorDot />
       <div
         style={{
-          position: 'absolute',
+          position: 'fixed',
           bottom: '0',
           left: '50%',
           transform: 'translateX(-50%)',
@@ -137,7 +137,7 @@ function MyMap() {
           fontSize: window.innerWidth < 400 ? '12px' : '14px',
           boxShadow: '0 2px 6px rgba(0,0,0,0.2)',
           direction: 'rtl',
-          zIndex: 10000,
+          zIndex: 10001,
           minWidth: '280px',
           maxWidth: '95%',
           textAlign: 'center',
