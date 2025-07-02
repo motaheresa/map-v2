@@ -19,20 +19,20 @@ function MyMap() {
 
   const infoWindowRef = useRef(null);
   const highlightedFeatureRef = useRef(null);
-
   const [currentCoords, setCurrentCoords] = useState({ lat: 0, lng: 0 });
   const [lineName, setLineName] = useState(null);
+  const [kmDistance, setKmDistance] = useState(null);
+  const [mapType, setMapType] = useState('roadmap');
 
   const handleMapLoad = (map) => {
     const google = window.google;
     infoWindowRef.current = new google.maps.InfoWindow();
 
-    fetch('/data.json') // تأكد من المسار الصحيح
+    fetch('/data.json')
       .then((res) => res.json())
       .then((data) => {
         map.data.addGeoJson(data);
 
-        // الخطوط كلها زرقاء مبدئيًا
         map.data.setStyle({
           strokeColor: 'blue',
           strokeWeight: 4,
@@ -55,20 +55,22 @@ function MyMap() {
           for (const feature of features) {
             const geometry = feature.getGeometry();
             if (geometry.getType() === 'LineString') {
-              const line = geometry;
-              const path = line.getArray();
-
+              const path = geometry.getArray();
               for (let i = 0; i < path.length - 1; i++) {
+                const closest = closestPointOnSegment(currentPoint, path[i], path[i + 1], google);
                 const dist = google.maps.geometry.spherical.computeDistanceBetween(
                   currentPoint,
-                  closestPointOnSegment(currentPoint, path[i], path[i + 1], google)
+                  closest
                 );
 
                 if (dist < 20) {
                   const name = feature.getProperty('Name');
                   setLineName(name);
 
-                  // تلوين الترعة الحالية بالأحمر
+                  // ✅ حساب المسافة من بداية الخط لحد نقطة المؤشر
+                  const distanceFromStart = computeDistanceAlongLine(path, closest, google);
+                  setKmDistance((distanceFromStart / 1000).toFixed(2)); // بالكيلومتر
+
                   if (highlightedFeatureRef.current !== feature) {
                     if (highlightedFeatureRef.current) {
                       map.data.overrideStyle(highlightedFeatureRef.current, {
@@ -81,7 +83,7 @@ function MyMap() {
                     map.data.overrideStyle(feature, {
                       strokeColor: 'red',
                       strokeWeight: 5,
-                      zIndex: 1000, // يخلي الأحمر فوق أي خط تاني
+                      zIndex: 1000,
                     });
 
                     highlightedFeatureRef.current = feature;
@@ -96,6 +98,7 @@ function MyMap() {
 
           if (!found) {
             setLineName(null);
+            setKmDistance(null);
             if (highlightedFeatureRef.current) {
               map.data.overrideStyle(highlightedFeatureRef.current, {
                 strokeColor: 'blue',
@@ -116,14 +119,36 @@ function MyMap() {
         center={center}
         zoom={15}
         onLoad={handleMapLoad}
+        mapTypeId={mapType}
         options={{
-          gestureHandling: 'greedy', // ✅ يسمح بالحركة بصباع واحد
+          gestureHandling: 'greedy',
           fullscreenControl: false,
           mapTypeControl: false,
           streetViewControl: false,
         }}
       />
       <CursorDot />
+      {/* زر نوع الخريطة */}
+      <button
+        onClick={() => setMapType((prev) => (prev === 'roadmap' ? 'satellite' : 'roadmap'))}
+        style={{
+          position: 'absolute',
+          top: 10,
+          left: 10,
+          zIndex: 10001,
+          backgroundColor: '#fff',
+          border: 'none',
+          borderRadius: '8px',
+          padding: '8px 12px',
+          boxShadow: '0 2px 6px rgba(0,0,0,0.2)',
+          cursor: 'pointer',
+          fontWeight: 'bold',
+        }}
+      >
+        {mapType === 'roadmap' ? '🛰️' : '🗺️'}
+      </button>
+
+      {/* بيانات */}
       <div
         style={{
           position: 'fixed',
@@ -144,7 +169,8 @@ function MyMap() {
         }}
       >
         📍 الإحداثيات: {currentCoords.lat.toFixed(6)}, {currentCoords.lng.toFixed(6)} <br />
-        {lineName && <>📌 الاسم: {lineName}</>}
+        {lineName && <>📌 الاسم: {lineName}<br /></>}
+        {kmDistance && <>📏الكيلومتري: {kmDistance} كم</>}
       </div>
     </div>
   ) : (
@@ -179,11 +205,34 @@ function closestPointOnSegment(p, a, b, google) {
   if (lengthSquared === 0) return a;
 
   const t = ((p.lng() - a.lng()) * dx + (p.lat() - a.lat()) * dy) / lengthSquared;
-
   if (t < 0) return a;
   if (t > 1) return b;
 
   return new google.maps.LatLng(a.lat() + t * dy, a.lng() + t * dx);
+}
+
+// ✅ تحسب المسافة من أول الخط لنقطة معينة
+function computeDistanceAlongLine(path, target, google) {
+  let distance = 0;
+  for (let i = 0; i < path.length - 1; i++) {
+    const segmentStart = path[i];
+    const segmentEnd = path[i + 1];
+    const segmentDistance = google.maps.geometry.spherical.computeDistanceBetween(segmentStart, segmentEnd);
+
+    const closest = closestPointOnSegment(target, segmentStart, segmentEnd, google);
+    const toClosest = google.maps.geometry.spherical.computeDistanceBetween(segmentStart, closest);
+
+    const toEnd = google.maps.geometry.spherical.computeDistanceBetween(segmentStart, segmentEnd);
+
+    if (Math.abs(toEnd - toClosest - google.maps.geometry.spherical.computeDistanceBetween(closest, segmentEnd)) < 0.01) {
+      // أقرب نقطة داخل هذا الجزء
+      return distance + toClosest;
+    }
+
+    distance += segmentDistance;
+  }
+
+  return distance;
 }
 
 export default MyMap;
