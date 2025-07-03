@@ -30,6 +30,30 @@ function MyMap() {
   const [searchResults, setSearchResults] = useState([]);
   const [showSearch, setShowSearch] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
+  const searchContainerRef = useRef(null);
+
+  // Handle click outside search to close it
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(event.target)) {
+        // Check if the click is not on the search button
+        const searchButton = event.target.closest('button');
+        if (!searchButton || searchButton.textContent !== '🔍') {
+          setShowSearch(false);
+        }
+      }
+    };
+
+    if (showSearch) {
+      document.addEventListener('mousedown', handleClickOutside);
+      document.addEventListener('touchstart', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('touchstart', handleClickOutside);
+    };
+  }, [showSearch]);
 
   const handleMapLoad = (map) => {
     const google = window.google;
@@ -217,14 +241,17 @@ function MyMap() {
     setIsDownloading(true);
     
     try {
-      // Hide all UI elements temporarily (except cursor)
-      const uiElements = document.querySelectorAll('.ui-overlay');
-      uiElements.forEach(el => el.style.display = 'none');
+      // Hide control buttons only (keep info box and cursor visible)
+      const controlButtons = document.querySelector('.control-buttons');
+      const searchContainer = document.querySelector('.search-container');
+      
+      if (controlButtons) controlButtons.style.display = 'none';
+      if (searchContainer) searchContainer.style.display = 'none';
       
       // Wait a moment for UI to hide
       await new Promise(resolve => setTimeout(resolve, 100));
       
-      // Capture the entire map container (including cursor)
+      // Capture the entire map container (including cursor and info box)
       const mapContainer = document.querySelector('#map-container');
       if (mapContainer) {
         const canvas = await html2canvas(mapContainer, {
@@ -233,15 +260,11 @@ function MyMap() {
           scale: 1,
           logging: false,
           width: mapContainer.offsetWidth,
-          height: mapContainer.offsetHeight,
-          ignoreElements: (element) => {
-            // Ignore UI overlay elements but keep the cursor
-            return element.classList.contains('ui-overlay');
-          }
+          height: mapContainer.offsetHeight
         });
         
         const link = document.createElement('a');
-        link.download = `map-${new Date().toISOString().split('T')[0]}.png`;
+        link.download = `map-${new Date().toISOString().split('T')}.png`;
         link.href = canvas.toDataURL('image/png');
         link.click();
       }
@@ -249,9 +272,12 @@ function MyMap() {
       console.error('Error downloading map:', error);
       alert('خطأ في تحميل الصورة');
     } finally {
-      // Show UI elements again
-      const uiElements = document.querySelectorAll('.ui-overlay');
-      uiElements.forEach(el => el.style.display = '');
+      // Show control buttons again
+      const controlButtons = document.querySelector('.control-buttons');
+      const searchContainer = document.querySelector('.search-container');
+      
+      if (controlButtons) controlButtons.style.display = '';
+      if (searchContainer) searchContainer.style.display = '';
       setIsDownloading(false);
     }
   };
@@ -274,7 +300,7 @@ function MyMap() {
       <CursorDot />
 
       {/* Control Buttons */}
-      <div className="ui-overlay" style={controlButtonsStyle}>
+      <div className="control-buttons" style={controlButtonsStyle}>
         <button
           onClick={() => setMapType((prev) => (prev === 'roadmap' ? 'satellite' : 'roadmap'))}
           style={controlButtonStyle}
@@ -319,7 +345,7 @@ function MyMap() {
 
       {/* Mobile-Responsive Search */}
       {showSearch && (
-        <div className="ui-overlay" style={searchContainerStyle}>
+        <div className="search-container" style={searchContainerStyle} ref={searchContainerRef}>
           <div style={searchBoxStyle}>
             <input
               type="text"
@@ -350,7 +376,7 @@ function MyMap() {
       )}
 
       {/* Info Box */}
-      <div className="ui-overlay" style={infoBoxStyle}>
+      <div className="info-box" style={infoBoxStyle}>
         📍 الإحداثيات: {currentCoords.lat.toFixed(6)}, {currentCoords.lng.toFixed(6)} <br />
         {lineName && (
           <>
@@ -380,6 +406,9 @@ const controlButtonsStyle = {
   flexDirection: window.innerWidth < 768 ? 'row' : 'column',
   gap: '8px',
   flexWrap: 'wrap',
+  // Prevent buttons from moving during download
+  transform: 'translateZ(0)',
+  backfaceVisibility: 'hidden',
 };
 
 const controlButtonStyle = {
