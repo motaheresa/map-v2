@@ -29,6 +29,7 @@ function MyMap() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [showSearch, setShowSearch] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
 
   const handleMapLoad = (map) => {
     const google = window.google;
@@ -210,13 +211,49 @@ function MyMap() {
     alert("✅ تم نسخ البيانات بنجاح!");
   };
 
-  const downloadMapImage = () => {
-    html2canvas(document.querySelector('#map-container')).then((canvas) => {
-      const link = document.createElement('a');
-      link.download = 'map-snapshot.png';
-      link.href = canvas.toDataURL();
-      link.click();
-    });
+  const downloadMapImage = async () => {
+    if (isDownloading) return;
+    
+    setIsDownloading(true);
+    
+    try {
+      // Hide all UI elements temporarily (except cursor)
+      const uiElements = document.querySelectorAll('.ui-overlay');
+      uiElements.forEach(el => el.style.display = 'none');
+      
+      // Wait a moment for UI to hide
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      // Capture the entire map container (including cursor)
+      const mapContainer = document.querySelector('#map-container');
+      if (mapContainer) {
+        const canvas = await html2canvas(mapContainer, {
+          useCORS: true,
+          allowTaint: true,
+          scale: 1,
+          logging: false,
+          width: mapContainer.offsetWidth,
+          height: mapContainer.offsetHeight,
+          ignoreElements: (element) => {
+            // Ignore UI overlay elements but keep the cursor
+            return element.classList.contains('ui-overlay');
+          }
+        });
+        
+        const link = document.createElement('a');
+        link.download = `map-${new Date().toISOString().split('T')[0]}.png`;
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+      }
+    } catch (error) {
+      console.error('Error downloading map:', error);
+      alert('خطأ في تحميل الصورة');
+    } finally {
+      // Show UI elements again
+      const uiElements = document.querySelectorAll('.ui-overlay');
+      uiElements.forEach(el => el.style.display = '');
+      setIsDownloading(false);
+    }
   };
 
   return isLoaded ? (
@@ -236,89 +273,84 @@ function MyMap() {
       />
       <CursorDot />
 
-      {/* زر البحث */}
-      <button 
-        onClick={() => setShowSearch(!showSearch)}
-        style={buttonStyle(10, 210)}
-      >
-        🔍
-      </button>
+      {/* Control Buttons */}
+      <div className="ui-overlay" style={controlButtonsStyle}>
+        <button
+          onClick={() => setMapType((prev) => (prev === 'roadmap' ? 'satellite' : 'roadmap'))}
+          style={controlButtonStyle}
+          title="تغيير نوع الخريطة"
+        >
+          {mapType === 'roadmap' ? '🛰️' : '🗺️'}
+        </button>
+        
+        <button 
+          onClick={copyToClipboard} 
+          style={controlButtonStyle}
+          title="نسخ البيانات"
+        >
+          📋
+        </button>
+        
+        <button 
+          onClick={downloadMapImage} 
+          style={controlButtonStyle}
+          disabled={isDownloading}
+          title="تحميل صورة الخريطة"
+        >
+          {isDownloading ? '⏳' : '📷'}
+        </button>
+        
+        <button 
+          onClick={handleGoHome} 
+          style={controlButtonStyle}
+          title="العودة لموقعي"
+        >
+          🏠
+        </button>
+        
+        <button 
+          onClick={() => setShowSearch(!showSearch)}
+          style={controlButtonStyle}
+          title="البحث"
+        >
+          🔍
+        </button>
+      </div>
 
-      {/* حقل البحث */}
+      {/* Mobile-Responsive Search */}
       {showSearch && (
-        <div style={{
-          position: 'absolute',
-          top: '10px',
-          left: '260px',
-          zIndex: 10001,
-          backgroundColor: '#fff',
-          borderRadius: '8px',
-          padding: '6px',
-          boxShadow: '0 2px 6px rgba(0,0,0,0.2)',
-          display: 'flex',
-          alignItems: 'center'
-        }}>
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="ابحث عن ترعة..."
-            style={{
-              border: 'none',
-              outline: 'none',
-              padding: '4px',
-              width: '200px',
-              direction: 'rtl'
-            }}
-            onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
-          />
-          <button 
-            onClick={handleSearch}
-            style={{
-              border: 'none',
-              background: 'none',
-              cursor: 'pointer',
-              padding: '0 4px'
-            }}
-          >
-            بحث
-          </button>
-          {searchResults.length > 0 && (
-            <button 
-              onClick={resetSearchResults}
-              style={{
-                border: 'none',
-                background: 'none',
-                cursor: 'pointer',
-                padding: '0 4px',
-                color: 'red'
-              }}
-            >
-              ✕
-            </button>
-          )}
+        <div className="ui-overlay" style={searchContainerStyle}>
+          <div style={searchBoxStyle}>
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="ابحث عن ترعة..."
+              style={searchInputStyle}
+              onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+            />
+            <div style={searchButtonsStyle}>
+              <button 
+                onClick={handleSearch}
+                style={searchActionButtonStyle}
+              >
+                بحث
+              </button>
+              {searchResults.length > 0 && (
+                <button 
+                  onClick={resetSearchResults}
+                  style={{...searchActionButtonStyle, color: 'red'}}
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
-      {/* زر تغيير نوع الخريطة */}
-      <button
-        onClick={() => setMapType((prev) => (prev === 'roadmap' ? 'satellite' : 'roadmap'))}
-        style={buttonStyle(10, 10)}
-      >
-        {mapType === 'roadmap' ? '🛰️' : '🗺️'}
-      </button>
-
-      {/* زر نسخ */}
-      <button onClick={copyToClipboard} style={buttonStyle(10, 60)}>📋</button>
-
-      {/* زر تحميل */}
-      <button onClick={downloadMapImage} style={buttonStyle(10, 110)}>📷</button>
-
-      {/* زر هووم */}
-      <button onClick={handleGoHome} style={buttonStyle(10, 160)}>🏠</button>
-
-      {/* بيانات الإحداثيات والاسم */}
-      <div style={infoBoxStyle}>
+      {/* Info Box */}
+      <div className="ui-overlay" style={infoBoxStyle}>
         📍 الإحداثيات: {currentCoords.lat.toFixed(6)}, {currentCoords.lng.toFixed(6)} <br />
         {lineName && (
           <>
@@ -338,36 +370,99 @@ function MyMap() {
   );
 }
 
-const buttonStyle = (top, left) => ({
+// Responsive Styles
+const controlButtonsStyle = {
   position: 'absolute',
-  top: `${top}px`,
-  left: `${left}px`,
+  top: '10px',
+  left: '10px',
   zIndex: 10001,
+  display: 'flex',
+  flexDirection: window.innerWidth < 768 ? 'row' : 'column',
+  gap: '8px',
+  flexWrap: 'wrap',
+};
+
+const controlButtonStyle = {
   backgroundColor: '#fff',
   border: 'none',
   borderRadius: '8px',
-  padding: '6px 12px',
+  padding: window.innerWidth < 768 ? '8px 10px' : '10px 12px',
   boxShadow: '0 2px 6px rgba(0,0,0,0.2)',
   cursor: 'pointer',
   fontWeight: 'bold',
-});
+  fontSize: window.innerWidth < 768 ? '14px' : '16px',
+  minWidth: '40px',
+  height: '40px',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+};
+
+const searchContainerStyle = {
+  position: 'absolute',
+  top: window.innerWidth < 768 ? '60px' : '10px',
+  left: window.innerWidth < 768 ? '10px' : '70px',
+  right: window.innerWidth < 768 ? '10px' : 'auto',
+  zIndex: 10001,
+};
+
+const searchBoxStyle = {
+  backgroundColor: '#fff',
+  borderRadius: '8px',
+  padding: '8px',
+  boxShadow: '0 2px 6px rgba(0,0,0,0.2)',
+  display: 'flex',
+  flexDirection: window.innerWidth < 768 ? 'column' : 'row',
+  alignItems: window.innerWidth < 768 ? 'stretch' : 'center',
+  gap: '8px',
+  minWidth: window.innerWidth < 768 ? 'auto' : '300px',
+};
+
+const searchInputStyle = {
+  border: '1px solid #ddd',
+  borderRadius: '4px',
+  padding: '8px',
+  outline: 'none',
+  direction: 'rtl',
+  fontSize: '14px',
+  flex: 1,
+  minWidth: window.innerWidth < 768 ? '100%' : '200px',
+};
+
+const searchButtonsStyle = {
+  display: 'flex',
+  gap: '4px',
+  flexShrink: 0,
+};
+
+const searchActionButtonStyle = {
+  border: 'none',
+  background: '#007bff',
+  color: 'white',
+  borderRadius: '4px',
+  padding: '6px 12px',
+  cursor: 'pointer',
+  fontSize: '12px',
+  whiteSpace: 'nowrap',
+};
 
 const infoBoxStyle = {
   position: 'fixed',
-  bottom: '0',
+  bottom: '10px',
   left: '50%',
   transform: 'translateX(-50%)',
   backgroundColor: 'rgba(255, 255, 255, 0.95)',
-  padding: '8px 16px',
+  padding: window.innerWidth < 768 ? '6px 12px' : '8px 16px',
   borderRadius: '12px',
   fontFamily: 'sans-serif',
-  fontSize: window.innerWidth < 400 ? '12px' : '14px',
+  fontSize: window.innerWidth < 400 ? '11px' : window.innerWidth < 768 ? '12px' : '14px',
   boxShadow: '0 2px 6px rgba(0,0,0,0.2)',
   direction: 'rtl',
   zIndex: 10001,
-  minWidth: '280px',
+  minWidth: window.innerWidth < 768 ? '250px' : '280px',
   maxWidth: '95%',
   textAlign: 'center',
+  lineHeight: '1.4',
 };
 
 function CursorDot() {
