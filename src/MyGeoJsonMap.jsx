@@ -1,10 +1,10 @@
-import { useRef, useState, useEffect } from 'react';
-import { GoogleMap, useJsApiLoader } from '@react-google-maps/api';
-import html2canvas from 'html2canvas';
+import { useRef, useState, useEffect } from "react";
+import { GoogleMap, useJsApiLoader } from "@react-google-maps/api";
+import html2canvas from "html2canvas";
 
 const containerStyle = {
-  width: '100%',
-  height: '100vh',
+  width: "100%",
+  height: "100vh",
 };
 
 const center = {
@@ -14,8 +14,8 @@ const center = {
 
 function MyMap() {
   const { isLoaded } = useJsApiLoader({
-    googleMapsApiKey: 'AIzaSyC5MHgv-Vax9PJqB2kROWaiVYD5AtFHnIc',
-    libraries: ['geometry'],
+    googleMapsApiKey: "AIzaSyC5MHgv-Vax9PJqB2kROWaiVYD5AtFHnIc",
+    libraries: ["geometry"],
   });
 
   const infoWindowRef = useRef(null);
@@ -24,9 +24,9 @@ function MyMap() {
   const [currentCoords, setCurrentCoords] = useState({ lat: 0, lng: 0 });
   const [lineName, setLineName] = useState(null);
   const [distanceFromStart, setDistanceFromStart] = useState(null);
-  const [mapType, setMapType] = useState('roadmap');
+  const [mapType, setMapType] = useState("roadmap");
   const [userLocation, setUserLocation] = useState(null);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState([]);
   const [showSearch, setShowSearch] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
@@ -35,23 +35,26 @@ function MyMap() {
   // Handle click outside search to close it
   useEffect(() => {
     const handleClickOutside = (event) => {
-      if (searchContainerRef.current && !searchContainerRef.current.contains(event.target)) {
+      if (
+        searchContainerRef.current &&
+        !searchContainerRef.current.contains(event.target)
+      ) {
         // Check if the click is not on the search button
-        const searchButton = event.target.closest('button');
-        if (!searchButton || searchButton.textContent !== '🔍') {
+        const searchButton = event.target.closest("button");
+        if (!searchButton || searchButton.textContent !== "🔍") {
           setShowSearch(false);
         }
       }
     };
 
     if (showSearch) {
-      document.addEventListener('mousedown', handleClickOutside);
-      document.addEventListener('touchstart', handleClickOutside);
+      document.addEventListener("mousedown", handleClickOutside);
+      document.addEventListener("touchstart", handleClickOutside);
     }
 
     return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-      document.removeEventListener('touchstart', handleClickOutside);
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("touchstart", handleClickOutside);
     };
   }, [showSearch]);
 
@@ -81,13 +84,13 @@ function MyMap() {
       map.setZoom(15);
     }
 
-    fetch('/data.json')
+    fetch("/data.json")
       .then((res) => res.json())
       .then((data) => {
         map.data.addGeoJson(data);
 
         map.data.setStyle({
-          strokeColor: 'blue',
+          strokeColor: "blue",
           strokeWeight: 4,
           strokeOpacity: 1,
           zIndex: 1,
@@ -100,46 +103,71 @@ function MyMap() {
           const center = map.getCenter();
           if (!center) return;
 
-          const currentPoint = new google.maps.LatLng(center.lat(), center.lng());
+          const currentPoint = new google.maps.LatLng(
+            center.lat(),
+            center.lng()
+          );
           setCurrentCoords({ lat: center.lat(), lng: center.lng() });
 
           let found = false;
 
           for (const feature of features) {
             const geometry = feature.getGeometry();
-            if (geometry.getType() === 'LineString') {
+            if (geometry.getType() === "LineString") {
               const path = geometry.getArray();
               for (let i = 0; i < path.length - 1; i++) {
-                const dist = google.maps.geometry.spherical.computeDistanceBetween(
-                  currentPoint,
-                  closestPointOnSegment(currentPoint, path[i], path[i + 1], google)
-                );
+                const dist =
+                  google.maps.geometry.spherical.computeDistanceBetween(
+                    currentPoint,
+                    closestPointOnSegment(
+                      currentPoint,
+                      path[i],
+                      path[i + 1],
+                      google
+                    )
+                  );
 
                 if (dist < 20) {
-                  const name = feature.getProperty('Name');
+                  const name = feature.getProperty("Name");
                   setLineName(name);
 
                   let totalDistance = 0;
                   for (let j = 0; j < i; j++) {
-                    totalDistance += google.maps.geometry.spherical.computeDistanceBetween(path[j], path[j + 1]);
+                    totalDistance +=
+                      google.maps.geometry.spherical.computeDistanceBetween(
+                        path[j],
+                        path[j + 1]
+                      );
                   }
-                  totalDistance += google.maps.geometry.spherical.computeDistanceBetween(
-                    path[i],
-                    closestPointOnSegment(currentPoint, path[i], path[i + 1], google)
-                  );
-                  setDistanceFromStart((totalDistance / 1000).toFixed(2));
+                  totalDistance +=
+                    google.maps.geometry.spherical.computeDistanceBetween(
+                      path[i],
+                      closestPointOnSegment(
+                        currentPoint,
+                        path[i],
+                        path[i + 1],
+                        google
+                      )
+                    );
+                  setDistanceFromStart((totalDistance / 1000).toFixed(3));
 
-                  if (highlightedFeatureRef.current !== feature && !searchResults.includes(feature)) {
-                    if (highlightedFeatureRef.current && !searchResults.includes(highlightedFeatureRef.current)) {
+                  if (
+                    highlightedFeatureRef.current !== feature &&
+                    !searchResults.includes(feature)
+                  ) {
+                    if (
+                      highlightedFeatureRef.current &&
+                      !searchResults.includes(highlightedFeatureRef.current)
+                    ) {
                       map.data.overrideStyle(highlightedFeatureRef.current, {
-                        strokeColor: 'blue',
+                        strokeColor: "blue",
                         strokeWeight: 4,
                         zIndex: 1,
                       });
                     }
 
                     map.data.overrideStyle(feature, {
-                      strokeColor: 'red',
+                      strokeColor: "red",
                       strokeWeight: 5,
                       zIndex: 1000,
                     });
@@ -157,9 +185,12 @@ function MyMap() {
           if (!found) {
             setLineName(null);
             setDistanceFromStart(null);
-            if (highlightedFeatureRef.current && !searchResults.includes(highlightedFeatureRef.current)) {
+            if (
+              highlightedFeatureRef.current &&
+              !searchResults.includes(highlightedFeatureRef.current)
+            ) {
               map.data.overrideStyle(highlightedFeatureRef.current, {
-                strokeColor: 'blue',
+                strokeColor: "blue",
                 strokeWeight: 4,
                 zIndex: 1,
               });
@@ -178,13 +209,13 @@ function MyMap() {
 
     const query = searchQuery.trim().toLowerCase();
     const results = [];
-    
+
     mapRef.current.data.forEach((feature) => {
-      const name = feature.getProperty('Name') || '';
+      const name = feature.getProperty("Name") || "";
       if (name.toLowerCase().includes(query)) {
         results.push(feature);
         mapRef.current.data.overrideStyle(feature, {
-          strokeColor: 'red',
+          strokeColor: "red",
           strokeWeight: 6,
           zIndex: 1000,
         });
@@ -192,14 +223,14 @@ function MyMap() {
     });
 
     setSearchResults(results);
-    
+
     if (results.length > 0) {
       // Zoom to fit all search results
       const bounds = new window.google.maps.LatLngBounds();
-      results.forEach(feature => {
+      results.forEach((feature) => {
         const geometry = feature.getGeometry();
-        if (geometry.getType() === 'LineString') {
-          geometry.getArray().forEach(point => bounds.extend(point));
+        if (geometry.getType() === "LineString") {
+          geometry.getArray().forEach((point) => bounds.extend(point));
         }
       });
       mapRef.current.fitBounds(bounds);
@@ -207,15 +238,15 @@ function MyMap() {
   };
 
   const resetSearchResults = () => {
-    searchResults.forEach(feature => {
+    searchResults.forEach((feature) => {
       mapRef.current.data.overrideStyle(feature, {
-        strokeColor: 'blue',
+        strokeColor: "blue",
         strokeWeight: 4,
         zIndex: 1,
       });
     });
     setSearchResults([]);
-    setSearchQuery('');
+    setSearchQuery("");
   };
 
   const handleGoHome = () => {
@@ -227,7 +258,8 @@ function MyMap() {
 
   const copyToClipboard = () => {
     const text = `
-📍 الإحداثيات: ${currentCoords.lat.toFixed(6)}, ${currentCoords.lng.toFixed(6)}
+    المؤشر عند
+📍 الإحداثيات: ${currentCoords.lat.toFixed(7)}, ${currentCoords.lng.toFixed(7)}
 📌 الاسم: ${lineName || "غير معروف"}
 📏 الكيلومتري: ${distanceFromStart || "غير متوفر"} كم
     `.trim();
@@ -237,22 +269,22 @@ function MyMap() {
 
   const downloadMapImage = async () => {
     if (isDownloading) return;
-    
+
     setIsDownloading(true);
-    
+
     try {
       // Hide control buttons only (keep info box and cursor visible)
-      const controlButtons = document.querySelector('.control-buttons');
-      const searchContainer = document.querySelector('.search-container');
-      
-      if (controlButtons) controlButtons.style.display = 'none';
-      if (searchContainer) searchContainer.style.display = 'none';
-      
+      const controlButtons = document.querySelector(".control-buttons");
+      const searchContainer = document.querySelector(".search-container");
+
+      if (controlButtons) controlButtons.style.display = "none";
+      if (searchContainer) searchContainer.style.display = "none";
+
       // Wait a moment for UI to hide
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
       // Capture the entire map container (including cursor and info box)
-      const mapContainer = document.querySelector('#map-container');
+      const mapContainer = document.querySelector("#map-container");
       if (mapContainer) {
         const canvas = await html2canvas(mapContainer, {
           useCORS: true,
@@ -260,30 +292,30 @@ function MyMap() {
           scale: 1,
           logging: false,
           width: mapContainer.offsetWidth,
-          height: mapContainer.offsetHeight
+          height: mapContainer.offsetHeight,
         });
-        
-        const link = document.createElement('a');
-        link.download = `map-${new Date().toISOString().split('T')}.png`;
-        link.href = canvas.toDataURL('image/png');
+
+        const link = document.createElement("a");
+        link.download = `map-${new Date().toISOString().split("T")[0]}.png`;
+        link.href = canvas.toDataURL("image/png");
         link.click();
       }
     } catch (error) {
-      console.error('Error downloading map:', error);
-      alert('خطأ في تحميل الصورة');
+      console.error("Error downloading map:", error);
+      alert("خطأ في تحميل الصورة");
     } finally {
       // Show control buttons again
-      const controlButtons = document.querySelector('.control-buttons');
-      const searchContainer = document.querySelector('.search-container');
-      
-      if (controlButtons) controlButtons.style.display = '';
-      if (searchContainer) searchContainer.style.display = '';
+      const controlButtons = document.querySelector(".control-buttons");
+      const searchContainer = document.querySelector(".search-container");
+
+      if (controlButtons) controlButtons.style.display = "";
+      if (searchContainer) searchContainer.style.display = "";
       setIsDownloading(false);
     }
   };
 
   return isLoaded ? (
-    <div id="map-container" style={{ position: 'relative' }}>
+    <div id="map-container" style={{ position: "relative" }}>
       <GoogleMap
         mapContainerStyle={containerStyle}
         center={userLocation || center}
@@ -291,50 +323,60 @@ function MyMap() {
         onLoad={handleMapLoad}
         mapTypeId={mapType}
         options={{
-          gestureHandling: 'greedy',
+          gestureHandling: "greedy",
           fullscreenControl: false,
           mapTypeControl: false,
           streetViewControl: false,
         }}
       />
-      <CursorDot />
+      <CrosshairCursor />
 
       {/* Control Buttons */}
       <div className="control-buttons" style={controlButtonsStyle}>
         <button
-          onClick={() => setMapType((prev) => (prev === 'roadmap' ? 'satellite' : 'roadmap'))}
+          onClick={() =>
+            setMapType((prev) => (prev === "roadmap" ? "satellite" : "roadmap"))
+          }
           style={controlButtonStyle}
           title="تغيير نوع الخريطة"
         >
-          {mapType === 'roadmap' ? '🛰️' : '🗺️'}
+          {mapType === "roadmap" ? "🛰️" : "🗺️"}
         </button>
-        
-        <button 
-          onClick={copyToClipboard} 
+
+        <button
+          onClick={copyToClipboard}
           style={controlButtonStyle}
           title="نسخ البيانات"
         >
           📋
         </button>
-        
-        <button 
-          onClick={downloadMapImage} 
+
+        <button
+          onClick={downloadMapImage}
           style={controlButtonStyle}
           disabled={isDownloading}
           title="تحميل صورة الخريطة"
         >
-          {isDownloading ? '⏳' : '📷'}
+          {isDownloading ? "⏳" : "📷"}
         </button>
-        
-        <button 
-          onClick={handleGoHome} 
-          style={controlButtonStyle}
-          title="العودة لموقعي"
-        >
-          🏠
-        </button>
-        
-        <button 
+
+        <button
+  onClick={handleGoHome}
+  style={controlButtonStyle}
+  title="العودة لموقعي"
+>
+  <img 
+    src="/homeIcon.jpg" 
+    style={{
+      width: "25px", 
+      height: "25px",
+      objectFit: "contain"
+    }} 
+    alt="Home" 
+  />
+</button>
+
+        <button
           onClick={() => setShowSearch(!showSearch)}
           style={controlButtonStyle}
           title="البحث"
@@ -345,7 +387,11 @@ function MyMap() {
 
       {/* Mobile-Responsive Search */}
       {showSearch && (
-        <div className="search-container" style={searchContainerStyle} ref={searchContainerRef}>
+        <div
+          className="search-container"
+          style={searchContainerStyle}
+          ref={searchContainerRef}
+        >
           <div style={searchBoxStyle}>
             <input
               type="text"
@@ -353,19 +399,16 @@ function MyMap() {
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="ابحث عن ترعة..."
               style={searchInputStyle}
-              onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+              onKeyPress={(e) => e.key === "Enter" && handleSearch()}
             />
             <div style={searchButtonsStyle}>
-              <button 
-                onClick={handleSearch}
-                style={searchActionButtonStyle}
-              >
+              <button onClick={handleSearch} style={searchActionButtonStyle}>
                 بحث
               </button>
               {searchResults.length > 0 && (
-                <button 
+                <button
                   onClick={resetSearchResults}
-                  style={{...searchActionButtonStyle, color: 'red'}}
+                  style={{ ...searchActionButtonStyle, color: "red" }}
                 >
                   ✕
                 </button>
@@ -377,15 +420,17 @@ function MyMap() {
 
       {/* Info Box */}
       <div className="info-box" style={infoBoxStyle}>
-        📍 الإحداثيات: {currentCoords.lat.toFixed(6)}, {currentCoords.lng.toFixed(6)} <br />
+        <p>المؤشر عند</p>
+        📍 الإحداثيات: {currentCoords.lat.toFixed(7)},{" "}
+        {currentCoords.lng.toFixed(7)} <br />
         {lineName && (
           <>
-            📌 الاسم: {lineName} <br />
-            📏 الكيلومتري: {distanceFromStart} كم
+            <p>📌 الاسم: {lineName}</p>
+            <p> 📏 الكيلومتري: {distanceFromStart} كم</p>
           </>
         )}
         {searchResults.length > 0 && (
-          <div style={{ color: 'red', marginTop: '4px' }}>
+          <div style={{ color: "red", marginTop: "4px" }}>
             🎯 {searchResults.length} نتيجة بحث
           </div>
         )}
@@ -398,118 +443,188 @@ function MyMap() {
 
 // Responsive Styles
 const controlButtonsStyle = {
-  position: 'absolute',
-  top: '10px',
-  left: '10px',
+  position: "absolute",
+  top: "10px",
+  left: "10px",
   zIndex: 10001,
-  display: 'flex',
-  flexDirection: window.innerWidth < 768 ? 'row' : 'column',
-  gap: '8px',
-  flexWrap: 'wrap',
+  display: "flex",
+  flexDirection: window.innerWidth < 768 ? "row" : "column",
+  gap: "8px",
+  flexWrap: "wrap",
   // Prevent buttons from moving during download
-  transform: 'translateZ(0)',
-  backfaceVisibility: 'hidden',
+  transform: "translateZ(0)",
+  backfaceVisibility: "hidden",
 };
 
 const controlButtonStyle = {
-  backgroundColor: '#fff',
-  border: 'none',
-  borderRadius: '8px',
-  padding: window.innerWidth < 768 ? '8px 10px' : '10px 12px',
-  boxShadow: '0 2px 6px rgba(0,0,0,0.2)',
-  cursor: 'pointer',
-  fontWeight: 'bold',
-  fontSize: window.innerWidth < 768 ? '14px' : '16px',
-  minWidth: '40px',
-  height: '40px',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
+  backgroundColor: "#fff",
+  border: "none",
+  borderRadius: "8px",
+  padding: window.innerWidth < 768 ? "8px 10px" : "10px 12px",
+  boxShadow: "0 2px 6px rgba(0,0,0,0.2)",
+  cursor: "pointer",
+  fontWeight: "bold",
+  fontSize: window.innerWidth < 768 ? "14px" : "16px",
+  minWidth: "40px",
+  height: "40px",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
 };
 
 const searchContainerStyle = {
-  position: 'absolute',
-  top: window.innerWidth < 768 ? '60px' : '10px',
-  left: window.innerWidth < 768 ? '10px' : '70px',
-  right: window.innerWidth < 768 ? '10px' : 'auto',
+  position: "absolute",
+  top: window.innerWidth < 768 ? "60px" : "10px",
+  left: window.innerWidth < 768 ? "10px" : "70px",
+  right: window.innerWidth < 768 ? "10px" : "auto",
   zIndex: 10001,
 };
 
 const searchBoxStyle = {
-  backgroundColor: '#fff',
-  borderRadius: '8px',
-  padding: '8px',
-  boxShadow: '0 2px 6px rgba(0,0,0,0.2)',
-  display: 'flex',
-  flexDirection: window.innerWidth < 768 ? 'column' : 'row',
-  alignItems: window.innerWidth < 768 ? 'stretch' : 'center',
-  gap: '8px',
-  minWidth: window.innerWidth < 768 ? 'auto' : '300px',
+  backgroundColor: "#fff",
+  borderRadius: "8px",
+  padding: "8px",
+  boxShadow: "0 2px 6px rgba(0,0,0,0.2)",
+  display: "flex",
+  flexDirection: window.innerWidth < 768 ? "column" : "row",
+  alignItems: window.innerWidth < 768 ? "stretch" : "center",
+  gap: "8px",
+  minWidth: window.innerWidth < 768 ? "auto" : "300px",
 };
 
 const searchInputStyle = {
-  border: '1px solid #ddd',
-  borderRadius: '4px',
-  padding: '8px',
-  outline: 'none',
-  direction: 'rtl',
-  fontSize: '14px',
+  border: "1px solid #ddd",
+  borderRadius: "4px",
+  padding: "8px",
+  outline: "none",
+  direction: "rtl",
+  fontSize: "14px",
   flex: 1,
-  minWidth: window.innerWidth < 768 ? '100%' : '200px',
+  minWidth: window.innerWidth < 768 ? "100%" : "200px",
 };
 
 const searchButtonsStyle = {
-  display: 'flex',
-  gap: '4px',
+  display: "flex",
+  gap: "4px",
   flexShrink: 0,
 };
 
 const searchActionButtonStyle = {
-  border: 'none',
-  background: '#007bff',
-  color: 'white',
-  borderRadius: '4px',
-  padding: '6px 12px',
-  cursor: 'pointer',
-  fontSize: '12px',
-  whiteSpace: 'nowrap',
+  border: "none",
+  background: "#007bff",
+  color: "white",
+  borderRadius: "4px",
+  padding: "6px 12px",
+  cursor: "pointer",
+  fontSize: "12px",
+  whiteSpace: "nowrap",
 };
 
 const infoBoxStyle = {
-  position: 'fixed',
-  bottom: '10px',
-  left: '50%',
-  transform: 'translateX(-50%)',
-  backgroundColor: 'rgba(255, 255, 255, 0.95)',
-  padding: window.innerWidth < 768 ? '6px 12px' : '8px 16px',
-  borderRadius: '12px',
-  fontFamily: 'sans-serif',
-  fontSize: window.innerWidth < 400 ? '11px' : window.innerWidth < 768 ? '12px' : '14px',
-  boxShadow: '0 2px 6px rgba(0,0,0,0.2)',
-  direction: 'rtl',
+  position: "fixed",
+  bottom: "10px",
+  left: "50%",
+  transform: "translateX(-50%)",
+  backgroundColor: "rgba(255, 255, 255, 0.95)",
+  padding: window.innerWidth < 768 ? "6px 12px" : "8px 16px",
+  borderRadius: "12px",
+  fontFamily: "sans-serif",
+  fontSize:
+    window.innerWidth < 400
+      ? "11px"
+      : window.innerWidth < 768
+      ? "12px"
+      : "14px",
+  boxShadow: "0 2px 6px rgba(0,0,0,0.2)",
+  direction: "rtl",
   zIndex: 10001,
-  minWidth: window.innerWidth < 768 ? '250px' : '280px',
-  maxWidth: '95%',
-  textAlign: 'center',
-  lineHeight: '1.4',
+  minWidth: window.innerWidth < 768 ? "250px" : "280px",
+  maxWidth: "95%",
+  textAlign: "center",
+  lineHeight: "1.4",
 };
 
-function CursorDot() {
+function CrosshairCursor() {
   return (
     <div
       style={{
-        position: 'absolute',
-        top: '50%',
-        left: '50%',
-        width: '12px',
-        height: '12px',
-        backgroundColor: 'red',
-        borderRadius: '50%',
-        transform: 'translate(-50%, -50%)',
+        position: "absolute",
+        top: "50%",
+        left: "50%",
+        transform: "translate(-50%, -50%)",
         zIndex: 9999,
-        pointerEvents: 'none',
+        pointerEvents: "none",
       }}
-    />
+    >
+      {/* Outer circle */}
+      <div
+        style={{
+          position: "absolute",
+          width: "32px",
+          height: "32px",
+          border: "3px solid #007bff",
+          borderRadius: "50%",
+          backgroundColor: "rgba(255, 255, 255, 0.9)",
+          transform: "translate(-50%, -50%)",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+        }}
+      />
+      
+      {/* Inner dot */}
+      <div
+        style={{
+          position: "absolute",
+          width: "8px",
+          height: "8px",
+          backgroundColor: "#007bff",
+          borderRadius: "50%",
+          transform: "translate(-50%, -50%)",
+          border: "1px solid white",
+        }}
+      />
+      
+      {/* Crosshair lines */}
+      <div
+        style={{
+          position: "absolute",
+          width: "2px",
+          height: "16px",
+          backgroundColor: "#007bff",
+          transform: "translate(-50%, -100%)",
+          top: "-8px",
+        }}
+      />
+      <div
+        style={{
+          position: "absolute",
+          width: "2px",
+          height: "16px",
+          backgroundColor: "#007bff",
+          transform: "translate(-50%, 0%)",
+          top: "7px",
+        }}
+      />
+      <div
+        style={{
+          position: "absolute",
+          width: "16px",
+          height: "2px",
+          backgroundColor: "#007bff",
+          transform: "translate(-100%, -50%)",
+          left: "-8px",
+        }}
+      />
+      <div
+        style={{
+          position: "absolute",
+          width: "16px",
+          height: "2px",
+          backgroundColor: "#007bff",
+          transform: "translate(0%, -50%)",
+          left: "7px",
+        }}
+      />
+    </div>
   );
 }
 
@@ -520,7 +635,8 @@ function closestPointOnSegment(p, a, b, google) {
 
   if (lengthSquared === 0) return a;
 
-  const t = ((p.lng() - a.lng()) * dx + (p.lat() - a.lat()) * dy) / lengthSquared;
+  const t =
+    ((p.lng() - a.lng()) * dx + (p.lat() - a.lat()) * dy) / lengthSquared;
 
   if (t < 0) return a;
   if (t > 1) return b;
